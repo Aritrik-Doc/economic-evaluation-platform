@@ -2,7 +2,17 @@ import math
 
 import pytest
 
-from model.economics import Strategy, evaluate_two_strategies
+from model.economics import (
+    OUTCOME_MEASURES,
+    Strategy,
+    evaluate_two_strategies,
+    fully_incremental_analysis,
+)
+
+
+def test_outcome_measure_catalog():
+    assert set(OUTCOME_MEASURES) == {"QALY", "LYG", "DALY_AVERTED"}
+    assert OUTCOME_MEASURES["DALY_AVERTED"].label == "DALYs averted"
 
 
 def test_base_case_calculations():
@@ -86,6 +96,100 @@ def test_zero_difference_is_tie():
     assert result.icer is None
     assert result.incremental_nmb == 0
     assert result.preferred_by_nmb == "Tie"
+
+
+def test_multi_strategy_incremental_frontier():
+    strategies = [
+        Strategy("A", 10_000, 1.0),
+        Strategy("B", 12_000, 1.2),
+        Strategy("C", 15_000, 1.5),
+    ]
+
+    result = fully_incremental_analysis(strategies, 30_000)
+    frontier = result.efficient_frontier
+
+    assert [r.strategy.name for r in frontier] == ["A", "B", "C"]
+    assert frontier[0].icer is None
+    assert frontier[1].icer == pytest.approx(10_000)
+    assert frontier[1].compared_with == "A"
+    assert frontier[2].icer == pytest.approx(10_000)
+    assert frontier[2].compared_with == "B"
+
+
+def test_strong_dominance_in_multi_strategy_analysis():
+    strategies = [
+        Strategy("A", 10_000, 1.0),
+        Strategy("B", 14_000, 1.1),
+        Strategy("C", 13_000, 1.2),
+    ]
+
+    result = fully_incremental_analysis(strategies, 30_000)
+    status = {r.strategy.name: r.status for r in result.rows}
+
+    assert status["B"] == "strongly_dominated"
+    assert status["A"] == "efficient"
+    assert status["C"] == "efficient"
+
+
+def test_extended_dominance_in_multi_strategy_analysis():
+    strategies = [
+        Strategy("A", 10_000, 1.0),
+        Strategy("B", 14_000, 1.2),
+        Strategy("C", 16_000, 1.4),
+    ]
+
+    result = fully_incremental_analysis(strategies, 30_000)
+    rows = {r.strategy.name: r for r in result.rows}
+
+    assert rows["B"].status == "extendedly_dominated"
+    assert rows["C"].status == "efficient"
+    assert rows["C"].compared_with == "A"
+    assert rows["C"].icer == pytest.approx(15_000)
+
+
+def test_nmb_preference_across_multiple_strategies():
+    strategies = [
+        Strategy("A", 10_000, 1.0),
+        Strategy("B", 13_000, 1.2),
+        Strategy("C", 20_000, 1.5),
+    ]
+
+    result = fully_incremental_analysis(strategies, 30_000)
+
+    assert result.preferred_by_nmb == ("C",)
+
+
+def test_equal_effect_more_costly_is_strongly_dominated():
+    strategies = [
+        Strategy("A", 10_000, 1.0),
+        Strategy("B", 12_000, 1.0),
+        Strategy("C", 15_000, 1.5),
+    ]
+
+    result = fully_incremental_analysis(strategies, 30_000)
+    status = {r.strategy.name: r.status for r in result.rows}
+    assert status["B"] == "strongly_dominated"
+
+
+def test_duplicate_coordinates_rejected():
+    with pytest.raises(ValueError, match="identical cost and effect"):
+        fully_incremental_analysis(
+            [Strategy("A", 10_000, 1.0), Strategy("B", 10_000, 1.0)],
+            30_000,
+        )
+
+
+def test_duplicate_names_rejected():
+    with pytest.raises(ValueError, match="unique"):
+        fully_incremental_analysis(
+            [Strategy("A", 10_000, 1.0), Strategy("A", 12_000, 1.2)],
+            30_000,
+        )
+
+
+def test_at_least_two_strategies_required():
+    with pytest.raises(ValueError, match="At least two"):
+        fully_incremental_analysis([Strategy("A", 10_000, 1.0)], 30_000)
 
 
 @pytest.mark.parametrize("invalid", [math.inf, -math.inf, math.nan])
