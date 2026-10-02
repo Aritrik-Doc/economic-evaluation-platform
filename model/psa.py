@@ -48,34 +48,31 @@ def _distribution_parameters(distribution: DistributionSpec) -> dict[str, float]
     return values
 
 
-def _family(parameter: Parameter) -> str:
-    distribution = parameter.uncertainty.distribution
-    if distribution is None:
+def _distribution(parameter: Parameter) -> DistributionSpec:
+    psa = parameter.psa
+    if psa is None or not psa.enabled or psa.distribution is None:
         raise PSAConfigurationError(
-            f"Parameter '{parameter.id}' is marked for distribution uncertainty but has no distribution specification."
+            f"Parameter '{parameter.id}' is not configured with an enabled PSA distribution."
         )
-    return distribution.family.strip().lower()
+    return psa.distribution
+
+
+def _family(parameter: Parameter) -> str:
+    return _distribution(parameter).family.strip().lower()
 
 
 def _dirichlet_alpha(parameter: Parameter) -> float:
-    distribution = parameter.uncertainty.distribution
-    assert distribution is not None
-    params = _distribution_parameters(distribution)
+    params = _distribution_parameters(_distribution(parameter))
     alpha = params.get("alpha", params.get("concentration"))
     if alpha is None or alpha <= 0:
         raise PSAConfigurationError(
-            f"Dirichlet component '{parameter.id}' requires alpha>0 "
-            "(or concentration>0)."
+            f"Dirichlet component '{parameter.id}' requires alpha>0 (or concentration>0)."
         )
     return alpha
 
 
 def sample_distribution(distribution: DistributionSpec, rng: np.random.Generator) -> float:
-    """Sample one scalar distribution.
-
-    Dirichlet distributions are intentionally excluded here because they are
-    multivariate and must be sampled jointly across a named correlation group.
-    """
+    """Sample one scalar distribution; Dirichlet is sampled jointly elsewhere."""
     family = distribution.family.strip().lower()
     params = _distribution_parameters(distribution)
 
@@ -85,7 +82,6 @@ def sample_distribution(distribution: DistributionSpec, rng: np.random.Generator
         if alpha is None or beta is None or alpha <= 0 or beta <= 0:
             raise PSAConfigurationError("Beta distributions require alpha>0 and beta>0.")
         return float(rng.beta(alpha, beta))
-
     if family == "gamma":
         shape = params.get("shape", params.get("alpha"))
         scale = params.get("scale")
@@ -98,51 +94,44 @@ def sample_distribution(distribution: DistributionSpec, rng: np.random.Generator
                 "Gamma distributions require shape and scale, or alpha with a positive rate/lambda."
             )
         return float(rng.gamma(shape, scale))
-
     if family == "lognormal":
         meanlog = params.get("meanlog")
         sdlog = params.get("sdlog")
         if meanlog is None or sdlog is None or sdlog <= 0:
             raise PSAConfigurationError("Lognormal distributions require meanlog and sdlog>0.")
         return float(rng.lognormal(meanlog, sdlog))
-
     if family == "normal":
         mean = params.get("mean")
         sd = params.get("sd")
         if mean is None or sd is None or sd <= 0:
             raise PSAConfigurationError("Normal distributions require mean and sd>0.")
         return float(rng.normal(mean, sd))
-
     if family == "uniform":
         low = params.get("low")
         high = params.get("high")
         if low is None or high is None or high <= low:
             raise PSAConfigurationError("Uniform distributions require high>low.")
         return float(rng.uniform(low, high))
-
     if family == "dirichlet":
         raise PSAConfigurationError(
             "Dirichlet distributions must be sampled jointly through a shared correlation_group."
         )
-
     raise PSAConfigurationError(
-        f"Unsupported PSA distribution family '{distribution.family}'. "
-        "Supported families are beta, gamma, lognormal, normal, uniform and grouped dirichlet."
+        f"Unsupported PSA distribution family '{distribution.family}'. Supported families are beta, gamma, lognormal, normal, uniform and grouped dirichlet."
     )
 
 
 def _build_psa_plan(parameters: Sequence[Parameter]) -> _PSAPlan:
-    sampled = tuple(p for p in parameters if p.uncertainty.kind == "distribution")
+    sampled = tuple(p for p in parameters if p.psa is not None and p.psa.enabled)
     if not sampled:
-        raise PSAConfigurationError(
-            "PSA requires at least one parameter with uncertainty_kind='distribution'."
-        )
+        raise PSAConfigurationError("PSA requires at least one parameter explicitly enabled for PSA.")
 
     grouped: dict[str, list[Parameter]] = {}
     ungrouped_dirichlet: list[str] = []
     for parameter in sampled:
         family = _family(parameter)
-        group = parameter.uncertainty.correlation_group
+        assert parameter.psa is not None
+        group = parameter.psa.correlation_group
         if family == "dirichlet" and not group:
             ungrouped_dirichlet.append(parameter.id)
         if group:
@@ -151,21 +140,18 @@ def _build_psa_plan(parameters: Sequence[Parameter]) -> _PSAPlan:
     if ungrouped_dirichlet:
         raise PSAConfigurationError(
             "Dirichlet parameters require a shared correlation_group. Missing for: "
-            + ", ".join(sorted(ungrouped_dirichlet))
-            + "."
+            + ", ".join(sorted(ungrouped_dirichlet)) + "."
         )
 
     dirichlet_groups: dict[str, tuple[Parameter, ...]] = {}
     warnings: list[str] = []
     dirichlet_ids: set[str] = set()
-
     for group, members in grouped.items():
         families = {_family(parameter) for parameter in members}
         if "dirichlet" in families:
             if families != {"dirichlet"}:
                 raise PSAConfigurationError(
-                    f"Correlation group '{group}' mixes Dirichlet and non-Dirichlet distributions. "
-                    "A joint group must use one coherent sampling structure."
+                    f"Correlation group '{group}' mixes Dirichlet and non-Dirichlet distributions. A joint group must use one coherent sampling structure."
                 )
             if len(members) < 2:
                 raise PSAConfigurationError(
@@ -177,27 +163,18 @@ def _build_psa_plan(parameters: Sequence[Parameter]) -> _PSAPlan:
             dirichlet_ids.update(parameter.id for parameter in members)
         elif len(members) > 1:
             warnings.append(
-                "Correlation group '"
-                + group
-                + "' is declared for "
+                "Correlation group '" + group + "' is declared for "
                 + ", ".join(parameter.id for parameter in members)
-                + ". No joint distribution/covariance structure is configured, so these parameters "
-                "will be sampled independently. This can misrepresent decision uncertainty."
+                + ". No joint distribution/covariance structure is configured, so these parameters will be sampled independently. This can misrepresent decision uncertainty."
             )
 
     independently_sampled = tuple(
         parameter for parameter in sampled if parameter.id not in dirichlet_ids
     )
-    return _PSAPlan(
-        sampled=sampled,
-        independently_sampled=independently_sampled,
-        dirichlet_groups=dirichlet_groups,
-        warnings=tuple(warnings),
-    )
+    return _PSAPlan(sampled, independently_sampled, dirichlet_groups, tuple(warnings))
 
 
 def psa_configuration_warnings(parameters: Sequence[Parameter]) -> tuple[str, ...]:
-    """Return non-fatal methodological warnings for the configured PSA."""
     return _build_psa_plan(parameters).warnings
 
 
@@ -218,9 +195,7 @@ def run_tree_psa(
 
     plan = _build_psa_plan(parameters)
     rng = np.random.default_rng(seed)
-    parameter_draws = {
-        parameter.id: np.empty(iterations, dtype=float) for parameter in plan.sampled
-    }
+    parameter_draws = {parameter.id: np.empty(iterations, dtype=float) for parameter in plan.sampled}
 
     base = run_decision_tree(
         tree,
@@ -230,9 +205,8 @@ def run_tree_psa(
         outcome_discount_rate=outcome_discount_rate,
     )
     strategy_ids = tuple(row.strategy_id for row in base.strategies)
-    costs = {strategy_id: np.empty(iterations, dtype=float) for strategy_id in strategy_ids}
-    outcomes = {strategy_id: np.empty(iterations, dtype=float) for strategy_id in strategy_ids}
-
+    costs = {sid: np.empty(iterations, dtype=float) for sid in strategy_ids}
+    outcomes = {sid: np.empty(iterations, dtype=float) for sid in strategy_ids}
     dirichlet_alpha = {
         group: np.asarray([_dirichlet_alpha(parameter) for parameter in members], dtype=float)
         for group, members in plan.dirichlet_groups.items()
@@ -240,15 +214,10 @@ def run_tree_psa(
 
     for iteration in range(iterations):
         overrides: dict[str, float] = {}
-
         for parameter in plan.independently_sampled:
-            distribution = parameter.uncertainty.distribution
-            assert distribution is not None
-            draw = sample_distribution(distribution, rng)
+            draw = sample_distribution(_distribution(parameter), rng)
             if not isfinite(draw):
-                raise PSAConfigurationError(
-                    f"Distribution for '{parameter.id}' produced a non-finite draw."
-                )
+                raise PSAConfigurationError(f"Distribution for '{parameter.id}' produced a non-finite draw.")
             overrides[parameter.id] = draw
             parameter_draws[parameter.id][iteration] = draw
 
@@ -270,37 +239,23 @@ def run_tree_psa(
             )
         except DecisionTreeValidationError as exc:
             raise PSAConfigurationError(
-                f"PSA draw {iteration + 1} produced an invalid tree: {exc}. "
-                "For mutually exclusive probabilities that must sum to 1, configure them as a "
-                "Dirichlet group rather than independent scalar distributions."
+                f"PSA draw {iteration + 1} produced an invalid tree: {exc}. For mutually exclusive probabilities that must sum to 1, configure them as a Dirichlet group rather than independent scalar distributions."
             ) from exc
 
         for row in run.strategies:
             costs[row.strategy_id][iteration] = row.expected_cost
             outcomes[row.strategy_id][iteration] = row.expected_outcome
 
-    return PSAResult(
-        strategy_ids=strategy_ids,
-        costs=costs,
-        outcomes=outcomes,
-        parameter_draws=parameter_draws,
-        iterations=iterations,
-        seed=seed,
-        warnings=plan.warnings,
-    )
+    return PSAResult(strategy_ids, costs, outcomes, parameter_draws, iterations, seed, plan.warnings)
 
 
-def incremental_plane(
-    result: PSAResult,
-    *,
-    intervention_id: str,
-    comparator_id: str,
-) -> tuple[np.ndarray, np.ndarray]:
+def incremental_plane(result: PSAResult, *, intervention_id: str, comparator_id: str) -> tuple[np.ndarray, np.ndarray]:
     if intervention_id not in result.strategy_ids or comparator_id not in result.strategy_ids:
         raise ValueError("CE-plane comparison references an unknown strategy.")
-    delta_effect = result.outcomes[intervention_id] - result.outcomes[comparator_id]
-    delta_cost = result.costs[intervention_id] - result.costs[comparator_id]
-    return delta_effect, delta_cost
+    return (
+        result.outcomes[intervention_id] - result.outcomes[comparator_id],
+        result.costs[intervention_id] - result.costs[comparator_id],
+    )
 
 
 def ceac(result: PSAResult, thresholds: Sequence[float]) -> CEACResult:
@@ -309,28 +264,15 @@ def ceac(result: PSAResult, thresholds: Sequence[float]) -> CEACResult:
         raise ValueError("CEAC requires at least one threshold.")
     if np.any(~np.isfinite(threshold_array)) or np.any(threshold_array < 0):
         raise ValueError("CEAC thresholds must be finite and non-negative.")
-
-    probabilities = {
-        strategy_id: np.zeros(threshold_array.size, dtype=float)
-        for strategy_id in result.strategy_ids
-    }
-
+    probabilities = {sid: np.zeros(threshold_array.size, dtype=float) for sid in result.strategy_ids}
     for index, threshold in enumerate(threshold_array):
-        nmb = np.vstack(
-            [
-                threshold * result.outcomes[strategy_id] - result.costs[strategy_id]
-                for strategy_id in result.strategy_ids
-            ]
-        )
+        nmb = np.vstack([threshold * result.outcomes[sid] - result.costs[sid] for sid in result.strategy_ids])
         max_nmb = np.max(nmb, axis=0)
         is_best = np.isclose(nmb, max_nmb, rtol=1e-12, atol=1e-12)
         tie_counts = np.sum(is_best, axis=0)
-        for strategy_index, strategy_id in enumerate(result.strategy_ids):
-            probabilities[strategy_id][index] = float(
-                np.mean(is_best[strategy_index] / tie_counts)
-            )
-
-    return CEACResult(thresholds=threshold_array, probabilities=probabilities)
+        for strategy_index, sid in enumerate(result.strategy_ids):
+            probabilities[sid][index] = float(np.mean(is_best[strategy_index] / tie_counts))
+    return CEACResult(threshold_array, probabilities)
 
 
 def pairwise_probability_cost_effective(
@@ -343,9 +285,6 @@ def pairwise_probability_cost_effective(
     if willingness_to_pay < 0 or not isfinite(willingness_to_pay):
         raise ValueError("Willingness-to-pay threshold must be finite and non-negative.")
     delta_effect, delta_cost = incremental_plane(
-        result,
-        intervention_id=intervention_id,
-        comparator_id=comparator_id,
+        result, intervention_id=intervention_id, comparator_id=comparator_id
     )
-    inmb = willingness_to_pay * delta_effect - delta_cost
-    return float(np.mean(inmb > 0))
+    return float(np.mean(willingness_to_pay * delta_effect - delta_cost > 0))
