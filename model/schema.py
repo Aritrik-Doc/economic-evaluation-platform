@@ -1,8 +1,9 @@
-"""Auditable health-economic model schema for version 0.3.
+"""Auditable health-economic model schema.
 
-The schema makes provenance, assumptions and uncertainty explicit and mandatory.
-It is intentionally independent of any one model engine (decision tree, Markov,
-partitioned survival, microsimulation, etc.).
+Version 0.4.1 separates deterministic and probabilistic uncertainty so the same
+parameter can participate in DSA and PSA without being reconfigured. The legacy
+``UncertaintySpec`` is retained as a compatibility layer for older saved models
+and tests; new code should use ``dsa`` and ``psa`` on ``Parameter``.
 """
 
 from __future__ import annotations
@@ -90,14 +91,49 @@ class DistributionSpec:
 
 
 @dataclass(frozen=True)
-class UncertaintySpec:
-    """Explicit uncertainty representation.
+class DeterministicUncertaintySpec:
+    enabled: bool
+    rationale: str
+    lower: float | None = None
+    upper: float | None = None
 
-    ``kind='none'`` is allowed, but must be accompanied by a rationale explaining
-    why parameter uncertainty is not being represented.
+    def __post_init__(self) -> None:
+        if not self.rationale.strip():
+            raise ValueError("DSA uncertainty rationale is mandatory.")
+        if self.enabled:
+            if self.lower is None or self.upper is None:
+                raise ValueError("Enabled DSA requires lower and upper values.")
+            if not (isfinite(self.lower) and isfinite(self.upper)) or self.lower > self.upper:
+                raise ValueError("Invalid DSA uncertainty range.")
+        elif self.lower is not None or self.upper is not None:
+            raise ValueError("Disabled DSA should not carry low/high values.")
+
+
+@dataclass(frozen=True)
+class ProbabilisticUncertaintySpec:
+    enabled: bool
+    rationale: str
+    distribution: DistributionSpec | None = None
+    correlation_group: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.rationale.strip():
+            raise ValueError("PSA uncertainty rationale is mandatory.")
+        if self.enabled and self.distribution is None:
+            raise ValueError("Enabled PSA requires a probability distribution.")
+        if not self.enabled and self.distribution is not None:
+            raise ValueError("Disabled PSA should not carry a distribution.")
+
+
+@dataclass(frozen=True)
+class UncertaintySpec:
+    """Legacy combined uncertainty specification.
+
+    This remains supported so models created before v0.4.1 continue to compile.
+    New model-builder code stores separate deterministic and probabilistic specs.
     """
 
-    kind: Literal["none", "range", "distribution", "scenario"]
+    kind: Literal["none", "range", "distribution", "range_and_distribution", "scenario"]
     rationale: str
     lower: float | None = None
     upper: float | None = None
@@ -107,12 +143,12 @@ class UncertaintySpec:
     def __post_init__(self) -> None:
         if not self.rationale.strip():
             raise ValueError("Uncertainty rationale is mandatory.")
-        if self.kind == "range":
+        if self.kind in {"range", "range_and_distribution"}:
             if self.lower is None or self.upper is None:
                 raise ValueError("Range uncertainty requires lower and upper values.")
             if not (isfinite(self.lower) and isfinite(self.upper)) or self.lower > self.upper:
                 raise ValueError("Invalid uncertainty range.")
-        if self.kind == "distribution" and self.distribution is None:
+        if self.kind in {"distribution", "range_and_distribution"} and self.distribution is None:
             raise ValueError("Distribution uncertainty requires a distribution specification.")
 
 
@@ -140,7 +176,9 @@ class Parameter:
     category: ParameterCategory
     source: EvidenceSource
     assumption: AssumptionSpec
-    uncertainty: UncertaintySpec
+    uncertainty: UncertaintySpec | None = None
+    dsa: DeterministicUncertaintySpec | None = None
+    psa: ProbabilisticUncertaintySpec | None = None
     formula: str | None = None
     currency: str | None = None
     price_year: int | None = None
@@ -153,6 +191,61 @@ class Parameter:
             raise ValueError("Parameter id, label and unit are mandatory.")
         if not isfinite(self.value):
             raise ValueError("Parameter value must be finite.")
+
+        # Convert legacy uncertainty to the v0.4.1 split representation.
+        if self.dsa is None or self.psa is None:
+            legacy = self.uncertainty
+            if legacy is None:
+                raise ValueError("Parameter uncertainty must explicitly specify both DSA and PSA handling.")
+            if self.dsa is None:
+                dsa_enabled = legacy.kind in {"range", "range_and_distribution"}
+                object.__setattr__(
+                    self,
+                    "dsa",
+                    DeterministicUncertaintySpec(
+                        enabled=dsa_enabled,
+                        rationale=legacy.rationale,
+                        lower=legacy.lower if dsa_enabled else None,
+                        upper=legacy.upper if dsa_enabled else None,
+                    ),
+                )
+            if self.psa is None:
+                psa_enabled = legacy.kind in {"distribution", "range_and_distribution"}
+                object.__setattr__(
+                    self,
+                    "psa",
+                    ProbabilisticUncertaintySpec(
+                        enabled=psa_enabled,
+                        rationale=legacy.rationale,
+                        distribution=legacy.distribution if psa_enabled else None,
+                        correlation_group=legacy.correlation_group if psa_enabled else None,
+                    ),
+                )
+
+        # Build a legacy view when a new-style parameter did not provide one.
+        if self.uncertainty is None:
+            assert self.dsa is not None and self.psa is not None
+            if self.dsa.enabled and self.psa.enabled:
+                kind = "range_and_distribution"
+            elif self.dsa.enabled:
+                kind = "range"
+            elif self.psa.enabled:
+                kind = "distribution"
+            else:
+                kind = "none"
+            object.__setattr__(
+                self,
+                "uncertainty",
+                UncertaintySpec(
+                    kind=kind,
+                    rationale=f"DSA: {self.dsa.rationale} PSA: {self.psa.rationale}",
+                    lower=self.dsa.lower if self.dsa.enabled else None,
+                    upper=self.dsa.upper if self.dsa.enabled else None,
+                    distribution=self.psa.distribution if self.psa.enabled else None,
+                    correlation_group=self.psa.correlation_group if self.psa.enabled else None,
+                ),
+            )
+
         if self.category == "cost":
             if self.currency is None or len(self.currency) != 3:
                 raise ValueError("Cost parameters require a three-letter currency code.")
