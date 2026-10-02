@@ -4,7 +4,7 @@ An open, auditable health-economic modelling and decision-analysis platform aime
 
 ## Current development milestone: 0.4
 
-Version 0.4 introduces the first **parameter-driven model engine**: a deterministic decision tree. The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
+Version 0.4 introduces the first **parameter-driven model engine**: a deterministic decision tree, plus a first **hybrid model builder** that combines structured editing with a live visual tree. The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
 
 The decision-tree engine calculates expected costs and health outcomes from explicit model structure and linked parameters rather than requiring strategy totals to be entered directly.
 
@@ -79,6 +79,23 @@ Cost parameters additionally require:
 
 This supports a **computational perspective**: costs can be automatically included or excluded according to who bears them and which reference case is selected.
 
+## Hybrid decision-tree builder
+
+`pages/1_Decision_Tree_Builder.py` provides the first user-facing modelling workflow.
+
+It uses structured editable tables for:
+
+- parameter library and provenance
+- strategies and root nodes
+- chance and terminal nodes
+- branch probabilities and destinations
+
+A live Graphviz diagram is generated from the same structure, so the visual representation cannot silently diverge from the analytical model.
+
+The builder validates the structure and then runs the tree to generate expected costs and outcomes by strategy. Those results feed directly into the existing fully incremental cost-effectiveness engine for dominance, sequential ICERs and NMB.
+
+The builder currently includes an illustrative example model on load. Users can add or remove rows and replace the example inputs.
+
 ## Decision-tree engine
 
 The v0.4 decision-tree engine supports:
@@ -106,6 +123,12 @@ Validation currently checks:
 - no cycles
 - cost rewards linked only to cost parameters
 - outcome rewards not linked to cost parameters
+
+## Current decision-tree limitation: timing and discounting
+
+The first decision-tree engine does not yet attach a time point to each node reward. Therefore automatic multi-year discounting is **not yet applied within the tree**. Until timed accrual is implemented, decision-tree models should either use short horizons where discounting is immaterial or use appropriately pre-discounted cost/outcome inputs.
+
+This limitation is explicit in the UI and should be resolved before treating the decision-tree modeller as HTA-complete for long-horizon models.
 
 ## Sensitivity analysis
 
@@ -143,8 +166,11 @@ The schema preserves source currency, target currency, exchange rate, exchange-r
 - `model/schema.py` — auditable model, parameter, source, uncertainty and structure definitions
 - `model/sensitivity.py` — one-way, two-way, threshold, scenario and PSA specifications/helpers
 - `model/decision_tree.py` — deterministic parameter-driven decision-tree engine
+- `model/tree_builder.py` — testable compiler from UI tables to model objects
+- `pages/1_Decision_Tree_Builder.py` — hybrid structured/visual decision-tree builder
 - `docs/methods.md` — methodology and source documentation
 - `tests/test_decision_tree.py` — decision-tree expected-value and validation tests
+- `tests/test_tree_builder.py` — builder/compiler validation tests
 
 ## Run locally
 
@@ -155,6 +181,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+Then open the **Decision Tree Builder** page from the Streamlit page navigation.
+
 ## Run tests
 
 ```bash
@@ -163,7 +191,8 @@ pytest -q
 
 ## Next milestones
 
-1. Build a user-facing decision-tree model builder on top of the v0.4 engine, including parameter entry, provenance capture and visual validation.
-2. Connect deterministic, two-way and threshold sensitivity analyses directly to model runs.
+1. Add timed rewards and automatic discounting to decision trees.
+2. Connect deterministic, two-way and threshold sensitivity analyses directly to builder model runs.
 3. Add PSA sampling over uncertain tree parameters.
-4. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective and uncertainty framework.
+4. Add save/load/export for model definitions and audit metadata.
+5. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective and uncertainty framework.
