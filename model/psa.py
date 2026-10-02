@@ -219,9 +219,13 @@ def ceac(result: PSAResult, thresholds: Sequence[float]) -> CEACResult:
                 for strategy_id in result.strategy_ids
             ]
         )
-        winners = np.argmax(nmb, axis=0)
+        max_nmb = np.max(nmb, axis=0)
+        is_best = np.isclose(nmb, max_nmb, rtol=1e-12, atol=1e-12)
+        tie_counts = np.sum(is_best, axis=0)
         for strategy_index, strategy_id in enumerate(result.strategy_ids):
-            probabilities[strategy_id][index] = float(np.mean(winners == strategy_index))
+            probabilities[strategy_id][index] = float(
+                np.mean(is_best[strategy_index] / tie_counts)
+            )
 
     return CEACResult(thresholds=threshold_array, probabilities=probabilities)
 
