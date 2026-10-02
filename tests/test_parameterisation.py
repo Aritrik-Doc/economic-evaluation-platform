@@ -50,7 +50,7 @@ def test_legacy_range_row_migrates_to_dsa_only():
     assert row["dsa_lower"] == 0.2
 
 
-def test_legacy_distribution_row_migrates_to_psa_only():
+def test_legacy_distribution_row_migrates_to_psa_only_and_defers_parsing():
     row = migrate_parameter_row(
         {
             "uncertainty_kind": "distribution",
@@ -61,4 +61,4 @@ def test_legacy_distribution_row_migrates_to_psa_only():
     )
     assert row["dsa_enabled"] is False
     assert row["psa_enabled"] is True
-    assert row["distribution_parameters"] == {"alpha": 2.0, "beta": 3.0}
+    assert row["distribution_parameters"] == "alpha=2,beta=3"
