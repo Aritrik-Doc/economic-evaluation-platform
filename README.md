@@ -4,9 +4,9 @@ An open, auditable health-economic modelling and decision-analysis platform aime
 
 ## Current development milestone: 0.4
 
-Version 0.4 introduces the first **parameter-driven model engine**: a deterministic decision tree, plus a first **hybrid model builder** that combines structured editing with a live visual tree. The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
+Version 0.4 provides the first **parameter-driven model engine**: a deterministic decision tree, plus a **hybrid model builder** that combines structured editing with a live visual tree. The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
 
-The decision-tree engine calculates expected costs and health outcomes from explicit model structure and linked parameters rather than requiring strategy totals to be entered directly.
+The decision-tree engine now calculates discounted expected costs and health outcomes from explicit model structure, parameter values, reward timing and perspective-specific cost inclusion. Strategy totals feed directly into the existing fully incremental cost-effectiveness engine.
 
 ## Recognised reference cases
 
@@ -40,15 +40,7 @@ Source: https://pmc.ncbi.nlm.nih.gov/articles/PMC10485782/
 
 ## Custom methods profile
 
-A `CUSTOM` profile is included for jurisdictions or decision contexts not yet represented in the recognised registry. Users explicitly specify:
-
-- primary outcome
-- perspective
-- time horizon
-- cost discount rate
-- outcome discount rate
-- analysis currency
-- decision threshold when one is required
+A `CUSTOM` profile is included for jurisdictions or decision contexts not yet represented in the recognised registry. Users explicitly specify primary outcome, perspective, time horizon, discount rates, analysis currency and decision threshold where relevant.
 
 The registry is deliberately extensible so recognised systems such as CADTH, PBAC, ZIN and others can be added later without changing the analytical engine.
 
@@ -70,18 +62,11 @@ Every model parameter must explicitly carry:
 - assumption statement and rationale
 - uncertainty specification and rationale
 
-Cost parameters additionally require:
-
-- currency
-- price year
-- cost bearer(s)
-- dated market-FX conversion provenance when conversion is used
-
-This supports a **computational perspective**: costs can be automatically included or excluded according to who bears them and which reference case is selected.
+Cost parameters additionally require currency, price year, cost bearer(s), and dated market-FX provenance when conversion is used. This supports a **computational perspective** in which costs are included or excluded according to who bears them and which reference case is selected.
 
 ## Hybrid decision-tree builder
 
-`pages/1_Decision_Tree_Builder.py` provides the first user-facing modelling workflow.
+`pages/1_Decision_Tree_Builder.py` provides the user-facing modelling workflow.
 
 It uses structured editable tables for:
 
@@ -89,58 +74,59 @@ It uses structured editable tables for:
 - strategies and root nodes
 - chance and terminal nodes
 - branch probabilities and destinations
+- timed cost and outcome rewards
 
 A live Graphviz diagram is generated from the same structure, so the visual representation cannot silently diverge from the analytical model.
 
-The builder validates the structure and then runs the tree to generate expected costs and outcomes by strategy. Those results feed directly into the existing fully incremental cost-effectiveness engine for dominance, sequential ICERs and NMB.
+### Timed rewards and discounting
 
-The builder currently includes an illustrative example model on load. Users can add or remove rows and replace the example inputs.
+Rewards are entered using `parameter@years` syntax. Examples:
+
+- `drug_cost@0`
+- `followup_cost@2.5`
+- `qaly_gain@1`
+
+A reward without an explicit time is treated as occurring at year 0. The engine applies annual discrete discounting separately to costs and outcomes using the selected reference-case or custom rates.
+
+### Probability complements
+
+Binary chance nodes can use one underlying probability parameter twice:
+
+- one branch in `direct` mode = `p`
+- the other in `complement` mode = `1 - p`
+
+This keeps branch probabilities coherent during sensitivity analysis and avoids silently renormalising invalid probabilities.
 
 ## Decision-tree engine
 
-The v0.4 decision-tree engine supports:
+The engine supports:
 
 - multiple mutually exclusive strategies
 - a separate root for each strategy
 - chance nodes with parameter-linked branch probabilities
+- direct and complement branch probability modes
 - terminal nodes
-- costs and health outcomes accrued at chance or terminal nodes
+- timed costs and health outcomes at chance or terminal nodes
+- separate cost and outcome discount rates
 - shared downstream subtrees
 - recursive expected-value calculation
-- parameter overrides for later DSA, two-way SA and threshold analysis
-- cost inclusion/exclusion by cost bearer so perspective affects calculations
+- parameter overrides for sensitivity analysis
+- cost inclusion/exclusion by cost bearer
 - structural validation before a model runs
 
-Validation currently checks:
-
-- at least two strategies
-- globally unique node ids
-- one root per strategy
-- valid child-node references
-- valid parameter references
-- probabilities constrained to 0–1
-- outgoing chance probabilities summing to 1 within tolerance
-- no cycles
-- cost rewards linked only to cost parameters
-- outcome rewards not linked to cost parameters
-
-## Current decision-tree limitation: timing and discounting
-
-The first decision-tree engine does not yet attach a time point to each node reward. Therefore automatic multi-year discounting is **not yet applied within the tree**. Until timed accrual is implemented, decision-tree models should either use short horizons where discounting is immaterial or use appropriately pre-discounted cost/outcome inputs.
-
-This limitation is explicit in the UI and should be resolved before treating the decision-tree modeller as HTA-complete for long-horizon models.
+Validation checks node and strategy uniqueness, child and parameter references, probability bounds and sum-to-one constraints, cycles, reward type consistency, timing, and discount-rate validity.
 
 ## Sensitivity analysis
 
-The methods layer defines first-class specifications and helpers for:
+The decision-tree builder now runs sensitivity analysis directly against the validated model:
 
 - one-way deterministic sensitivity analysis
-- **two-way sensitivity analysis**
-- **threshold analysis**
-- scenario analysis
-- probabilistic sensitivity analysis
+- **two-way sensitivity analysis** with an INMB grid
+- **threshold analysis** to identify parameter switching values
 
-The decision-tree runner accepts parameter overrides without mutating the base parameter set, allowing the same engine to be called by these sensitivity-analysis workflows.
+Sensitivity calculations use **incremental net monetary benefit (INMB)** for a user-selected intervention and comparator. Positive INMB favours the intervention, negative INMB favours the comparator, and zero is the switching point.
+
+The methods layer also defines scenario and probabilistic sensitivity-analysis specifications; PSA sampling is the next analytical implementation step.
 
 ## Decision-analysis engine
 
@@ -156,21 +142,21 @@ Model-generated strategy totals feed into the existing decision-analysis layer, 
 
 ## Currency approach
 
-The platform uses **market currency conversion**, not purchasing-power-parity/international-dollar conversion.
-
-The schema preserves source currency, target currency, exchange rate, exchange-rate date, exchange-rate source and original cost price year. Price-year adjustment remains conceptually separate from FX conversion.
+The platform uses **market currency conversion**, not purchasing-power-parity/international-dollar conversion. The schema preserves source currency, target currency, exchange rate, exchange-rate date, exchange-rate source and original cost price year. Price-year adjustment remains conceptually separate from FX conversion.
 
 ## Key files
 
 - `model/reference_cases.py` — recognised NICE/HTAIn profiles and custom profile support
 - `model/schema.py` — auditable model, parameter, source, uncertainty and structure definitions
-- `model/sensitivity.py` — one-way, two-way, threshold, scenario and PSA specifications/helpers
+- `model/sensitivity.py` — generic one-way, two-way, threshold, scenario and PSA specifications/helpers
 - `model/decision_tree.py` — deterministic parameter-driven decision-tree engine
-- `model/tree_builder.py` — testable compiler from UI tables to model objects
+- `model/tree_builder.py` — compiler from UI tables to model objects
+- `model/tree_sensitivity.py` — decision-tree INMB sensitivity helpers
 - `pages/1_Decision_Tree_Builder.py` — hybrid structured/visual decision-tree builder
 - `docs/methods.md` — methodology and source documentation
-- `tests/test_decision_tree.py` — decision-tree expected-value and validation tests
-- `tests/test_tree_builder.py` — builder/compiler validation tests
+- `tests/test_decision_tree.py`
+- `tests/test_tree_builder.py`
+- `tests/test_tree_sensitivity.py`
 
 ## Run locally
 
@@ -191,8 +177,7 @@ pytest -q
 
 ## Next milestones
 
-1. Add timed rewards and automatic discounting to decision trees.
-2. Connect deterministic, two-way and threshold sensitivity analyses directly to builder model runs.
-3. Add PSA sampling over uncertain tree parameters.
-4. Add save/load/export for model definitions and audit metadata.
-5. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective and uncertainty framework.
+1. Add **PSA sampling** over uncertain decision-tree parameters, including reproducible seeds and appropriate distributions.
+2. Add **save/load/export** for model definitions, results and audit metadata.
+3. Add scenario workflows and richer sensitivity visualisations such as tornado plots and two-way decision maps.
+4. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective and uncertainty framework.
