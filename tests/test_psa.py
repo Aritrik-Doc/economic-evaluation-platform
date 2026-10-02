@@ -7,6 +7,7 @@ from model.psa import (
     ceac,
     incremental_plane,
     pairwise_probability_cost_effective,
+    psa_configuration_warnings,
     run_tree_psa,
     sample_distribution,
 )
@@ -68,11 +69,59 @@ def example_model():
     return tree, parameters
 
 
+def dirichlet_model():
+    def d_uncertainty(alpha):
+        return UncertaintySpec(
+            kind="distribution",
+            rationale="Joint competing probability uncertainty",
+            distribution=DistributionSpec("dirichlet", (("alpha", float(alpha)),)),
+            correlation_group="outcome_simplex",
+        )
+
+    parameters = (
+        param("p_good", 0.5, uncertainty=d_uncertainty(5)),
+        param("p_mid", 0.3, uncertainty=d_uncertainty(3)),
+        param("p_bad", 0.2, uncertainty=d_uncertainty(2)),
+        param("good_qaly", 2.0, "utility"),
+        param("mid_qaly", 1.0, "utility"),
+        param("bad_qaly", 0.0, "utility"),
+        param("b_qaly", 0.8, "utility"),
+    )
+    tree = DecisionTreeDefinition(
+        strategy_roots=(StrategyRoot("A", "root"), StrategyRoot("B", "b")),
+        chance_nodes=(
+            ChanceNode(
+                "root",
+                "Three competing outcomes",
+                (
+                    TreeBranch("Good", "p_good", "good"),
+                    TreeBranch("Intermediate", "p_mid", "mid"),
+                    TreeBranch("Bad", "p_bad", "bad"),
+                ),
+            ),
+        ),
+        terminal_nodes=(
+            TerminalNode("good", "Good", outcome_parameter_ids=("good_qaly",)),
+            TerminalNode("mid", "Intermediate", outcome_parameter_ids=("mid_qaly",)),
+            TerminalNode("bad", "Bad", outcome_parameter_ids=("bad_qaly",)),
+            TerminalNode("b", "B", outcome_parameter_ids=("b_qaly",)),
+        ),
+    )
+    return tree, parameters
+
+
 def test_sample_beta_stays_bounded():
     rng = np.random.default_rng(1)
     dist = DistributionSpec("beta", (("alpha", 2.0), ("beta", 3.0)))
     draws = [sample_distribution(dist, rng) for _ in range(100)]
     assert all(0 <= draw <= 1 for draw in draws)
+
+
+def test_scalar_dirichlet_sampling_is_rejected():
+    rng = np.random.default_rng(1)
+    dist = DistributionSpec("dirichlet", (("alpha", 2.0),))
+    with pytest.raises(PSAConfigurationError, match="sampled jointly"):
+        sample_distribution(dist, rng)
 
 
 def test_psa_is_reproducible_with_seed():
@@ -82,6 +131,25 @@ def test_psa_is_reproducible_with_seed():
     assert np.array_equal(a.parameter_draws["p_success"], b.parameter_draws["p_success"])
     assert np.array_equal(a.costs["A"], b.costs["A"])
     assert np.array_equal(a.outcomes["A"], b.outcomes["A"])
+
+
+def test_dirichlet_group_is_joint_and_sums_to_one():
+    tree, parameters = dirichlet_model()
+    result = run_tree_psa(tree, parameters, iterations=200, seed=77)
+    total = result.parameter_draws["p_good"] + result.parameter_draws["p_mid"] + result.parameter_draws["p_bad"]
+    assert np.allclose(total, 1.0)
+    assert np.all(result.parameter_draws["p_good"] >= 0)
+    assert np.all(result.parameter_draws["p_mid"] >= 0)
+    assert np.all(result.parameter_draws["p_bad"] >= 0)
+    assert result.warnings == ()
+
+
+def test_dirichlet_group_is_reproducible():
+    tree, parameters = dirichlet_model()
+    a = run_tree_psa(tree, parameters, iterations=30, seed=9)
+    b = run_tree_psa(tree, parameters, iterations=30, seed=9)
+    for pid in ("p_good", "p_mid", "p_bad"):
+        assert np.array_equal(a.parameter_draws[pid], b.parameter_draws[pid])
 
 
 def test_incremental_plane_and_ceac_shapes():
@@ -109,7 +177,7 @@ def test_pairwise_probability_cost_effective_is_probability():
     assert 0 <= probability <= 1
 
 
-def test_declared_correlated_parameters_are_not_silently_sampled_independently():
+def test_declared_non_dirichlet_correlation_runs_with_warning():
     tree, parameters = example_model()
     grouped = []
     for parameter in parameters:
@@ -143,5 +211,37 @@ def test_declared_correlated_parameters_are_not_silently_sampled_independently()
             correlation_group="g1",
         ),
     )
-    with pytest.raises(PSAConfigurationError, match="Correlated PSA parameters"):
-        run_tree_psa(tree, tuple(grouped) + (second,), iterations=10, seed=1)
+    configured = tuple(grouped) + (second,)
+    warnings = psa_configuration_warnings(configured)
+    assert len(warnings) == 1
+    assert "sampled independently" in warnings[0]
+
+    result = run_tree_psa(tree, configured, iterations=10, seed=1)
+    assert result.iterations == 10
+    assert result.warnings == warnings
+
+
+def test_dirichlet_cannot_be_mixed_with_other_families_in_group():
+    tree, parameters = example_model()
+    d = param(
+        "d",
+        0.5,
+        uncertainty=UncertaintySpec(
+            kind="distribution",
+            rationale="Joint",
+            distribution=DistributionSpec("dirichlet", (("alpha", 2.0),)),
+            correlation_group="mixed",
+        ),
+    )
+    b = param(
+        "b",
+        0.5,
+        uncertainty=UncertaintySpec(
+            kind="distribution",
+            rationale="Joint",
+            distribution=DistributionSpec("beta", (("alpha", 2.0), ("beta", 2.0))),
+            correlation_group="mixed",
+        ),
+    )
+    with pytest.raises(PSAConfigurationError, match="mixes Dirichlet"):
+        run_tree_psa(tree, parameters + (d, b), iterations=10, seed=1)
