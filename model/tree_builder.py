@@ -1,9 +1,4 @@
-"""Pure helpers for compiling the hybrid decision-tree builder tables.
-
-The Streamlit UI edits simple row-oriented tables. This module converts those
-rows into the auditable v0.3 schema and deterministic v0.4 decision-tree engine,
-so parsing/validation is testable without Streamlit.
-"""
+"""Pure helpers for compiling hybrid decision-tree builder tables."""
 
 from __future__ import annotations
 
@@ -16,13 +11,14 @@ from model.decision_tree import (
     DecisionTreeDefinition,
     StrategyRoot,
     TerminalNode,
+    TimedReward,
     TreeBranch,
 )
 from model.schema import AssumptionSpec, EvidenceSource, Parameter, UncertaintySpec
 
 
 class BuilderValidationError(ValueError):
-    """Raised when an editable builder table cannot be compiled safely."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -81,28 +77,45 @@ def _optional_int(value: Any) -> int | None:
 
 
 def parse_id_list(value: Any) -> tuple[str, ...]:
-    """Parse comma- or semicolon-separated ids, removing empty items."""
     if _blank(value):
         return ()
     text = str(value).replace(";", ",")
     return tuple(item.strip() for item in text.split(",") if item.strip())
 
 
+def parse_reward_list(value: Any) -> tuple[TimedReward, ...]:
+    """Parse ``parameter@time`` tokens; missing @time means t=0 years."""
+    rewards: list[TimedReward] = []
+    for token in parse_id_list(value):
+        if "@" in token:
+            parameter_id, time_text = token.rsplit("@", 1)
+            parameter_id = parameter_id.strip()
+            try:
+                time_years = float(time_text.strip())
+            except ValueError as exc:
+                raise BuilderValidationError(
+                    f"Reward '{token}' has an invalid time. Use parameter@years."
+                ) from exc
+        else:
+            parameter_id = token.strip()
+            time_years = 0.0
+        try:
+            rewards.append(TimedReward(parameter_id, time_years))
+        except ValueError as exc:
+            raise BuilderValidationError(str(exc)) from exc
+    return tuple(rewards)
+
+
 def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter, ...]:
     parameters: list[Parameter] = []
-
     for index, row in enumerate(rows, start=1):
         if _blank(row.get("id")):
             continue
-
         parameter_id = _text(row.get("id"), f"Parameter row {index}: id")
         category = _text(row.get("category"), f"Parameter '{parameter_id}': category")
-        source_type = _text(row.get("source_type"), f"Parameter '{parameter_id}': source_type")
-        uncertainty_kind = _text(row.get("uncertainty_kind"), f"Parameter '{parameter_id}': uncertainty_kind")
-
         source = EvidenceSource(
             citation=_text(row.get("source_citation"), f"Parameter '{parameter_id}': source_citation"),
-            source_type=source_type,
+            source_type=_text(row.get("source_type"), f"Parameter '{parameter_id}': source_type"),
             url=_optional_text(row.get("source_url")),
             publication_year=_optional_int(row.get("publication_year")),
             details=_optional_text(row.get("source_details")) or "",
@@ -112,12 +125,11 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
             rationale=_text(row.get("assumption_rationale"), f"Parameter '{parameter_id}': assumption_rationale"),
         )
         uncertainty = UncertaintySpec(
-            kind=uncertainty_kind,
+            kind=_text(row.get("uncertainty_kind"), f"Parameter '{parameter_id}': uncertainty_kind"),
             rationale=_text(row.get("uncertainty_rationale"), f"Parameter '{parameter_id}': uncertainty_rationale"),
             lower=_optional_float(row.get("lower")),
             upper=_optional_float(row.get("upper")),
         )
-
         kwargs: dict[str, Any] = {}
         if category == "cost":
             kwargs.update(
@@ -125,7 +137,6 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
                 price_year=_optional_int(row.get("price_year")),
                 cost_bearers=parse_id_list(row.get("cost_bearers")),
             )
-
         try:
             parameters.append(
                 Parameter(
@@ -143,7 +154,6 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
             )
         except ValueError as exc:
             raise BuilderValidationError(str(exc)) from exc
-
     ids = [parameter.id for parameter in parameters]
     if not parameters:
         raise BuilderValidationError("At least one parameter is required.")
@@ -152,14 +162,9 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
     return tuple(parameters)
 
 
-def compile_structure_rows(
-    strategy_rows: Sequence[Mapping[str, Any]],
-    node_rows: Sequence[Mapping[str, Any]],
-    branch_rows: Sequence[Mapping[str, Any]],
-) -> tuple[DecisionTreeDefinition, Mapping[str, str]]:
+def compile_structure_rows(strategy_rows, node_rows, branch_rows):
     roots: list[StrategyRoot] = []
     strategy_names: dict[str, str] = {}
-
     for index, row in enumerate(strategy_rows, start=1):
         if _blank(row.get("strategy_id")):
             continue
@@ -183,7 +188,6 @@ def compile_structure_rows(
     chance_nodes: list[ChanceNode] = []
     terminal_nodes: list[TerminalNode] = []
     node_types: dict[str, str] = {}
-
     for index, row in enumerate(node_rows, start=1):
         if _blank(row.get("id")):
             continue
@@ -193,8 +197,10 @@ def compile_structure_rows(
         node_type = _text(row.get("type"), f"Node '{node_id}': type").lower()
         node_types[node_id] = node_type
         label = _text(row.get("label"), f"Node '{node_id}': label")
-        costs = parse_id_list(row.get("cost_parameter_ids"))
-        outcomes = parse_id_list(row.get("outcome_parameter_ids"))
+        legacy_costs = parse_id_list(row.get("cost_parameter_ids"))
+        legacy_outcomes = parse_id_list(row.get("outcome_parameter_ids"))
+        cost_rewards = parse_reward_list(row.get("cost_rewards"))
+        outcome_rewards = parse_reward_list(row.get("outcome_rewards"))
 
         if node_type == "chance":
             branches = []
@@ -204,16 +210,19 @@ def compile_structure_rows(
                         label=_text(branch.get("label"), f"Branch {b_index} from '{node_id}': label"),
                         probability_parameter_id=_text(branch.get("probability_parameter_id"), f"Branch '{node_id}': probability_parameter_id"),
                         child_node_id=_text(branch.get("to_node"), f"Branch '{node_id}': to_node"),
+                        probability_mode=(
+                            _optional_text(branch.get("probability_mode")) or "direct"
+                        ).lower(),
                     )
                 )
             try:
                 chance_nodes.append(
                     ChanceNode(
-                        id=node_id,
-                        label=label,
-                        branches=tuple(branches),
-                        cost_parameter_ids=costs,
-                        outcome_parameter_ids=outcomes,
+                        node_id, label, tuple(branches),
+                        cost_parameter_ids=legacy_costs,
+                        outcome_parameter_ids=legacy_outcomes,
+                        cost_rewards=cost_rewards,
+                        outcome_rewards=outcome_rewards,
                     )
                 )
             except ValueError as exc:
@@ -223,10 +232,11 @@ def compile_structure_rows(
                 raise BuilderValidationError(f"Terminal node '{node_id}' cannot have outgoing branches.")
             terminal_nodes.append(
                 TerminalNode(
-                    id=node_id,
-                    label=label,
-                    cost_parameter_ids=costs,
-                    outcome_parameter_ids=outcomes,
+                    node_id, label,
+                    cost_parameter_ids=legacy_costs,
+                    outcome_parameter_ids=legacy_outcomes,
+                    cost_rewards=cost_rewards,
+                    outcome_rewards=outcome_rewards,
                 )
             )
         else:
@@ -237,77 +247,50 @@ def compile_structure_rows(
         raise BuilderValidationError(
             "Branches originate from undefined node(s): " + ", ".join(sorted(unknown_origins)) + "."
         )
-
     try:
-        tree = DecisionTreeDefinition(
-            strategy_roots=tuple(roots),
-            chance_nodes=tuple(chance_nodes),
-            terminal_nodes=tuple(terminal_nodes),
-        )
+        tree = DecisionTreeDefinition(tuple(roots), tuple(chance_nodes), tuple(terminal_nodes))
     except ValueError as exc:
         raise BuilderValidationError(str(exc)) from exc
     return tree, strategy_names
 
 
-def compile_builder_tables(
-    parameter_rows: Sequence[Mapping[str, Any]],
-    strategy_rows: Sequence[Mapping[str, Any]],
-    node_rows: Sequence[Mapping[str, Any]],
-    branch_rows: Sequence[Mapping[str, Any]],
-) -> CompiledDecisionTree:
+def compile_builder_tables(parameter_rows, strategy_rows, node_rows, branch_rows):
     parameters = compile_parameter_rows(parameter_rows)
     tree, strategy_names = compile_structure_rows(strategy_rows, node_rows, branch_rows)
-    return CompiledDecisionTree(tree=tree, parameters=parameters, strategy_names=strategy_names)
+    return CompiledDecisionTree(tree, parameters, strategy_names)
 
 
-def structure_to_dot(
-    strategy_rows: Sequence[Mapping[str, Any]],
-    node_rows: Sequence[Mapping[str, Any]],
-    branch_rows: Sequence[Mapping[str, Any]],
-) -> str:
-    """Render even an incomplete structure as Graphviz DOT for live preview."""
+def structure_to_dot(strategy_rows, node_rows, branch_rows) -> str:
     import json
-
     def q(value: str) -> str:
         return json.dumps(str(value))
-
-    lines = [
-        "digraph DecisionTree {",
-        'rankdir="LR";',
-        'graph [pad="0.2", nodesep="0.35", ranksep="0.55"];',
-        'node [fontname="Arial"];',
-    ]
-
+    lines = ["digraph DecisionTree {", 'rankdir="LR";', 'graph [pad="0.2", nodesep="0.35", ranksep="0.55"];', 'node [fontname="Arial"];']
     for row in node_rows:
         if _blank(row.get("id")):
             continue
         node_id = str(row.get("id")).strip()
         label = str(row.get("label") or node_id).strip()
         node_type = str(row.get("type") or "").strip().lower()
-        shape = "circle" if node_type == "chance" else "box"
-        if node_type == "terminal":
-            shape = "doublecircle"
-        lines.append(f"{q(node_id)} [label={q(label)}, shape={q(shape)}];")
-
+        shape = "circle" if node_type == "chance" else "doublecircle" if node_type == "terminal" else "box"
+        rewards = []
+        if not _blank(row.get("cost_rewards")):
+            rewards.append(f"C: {row.get('cost_rewards')}")
+        if not _blank(row.get("outcome_rewards")):
+            rewards.append(f"E: {row.get('outcome_rewards')}")
+        full_label = label if not rewards else label + "\n" + "\n".join(rewards)
+        lines.append(f"{q(node_id)} [label={q(full_label)}, shape={q(shape)}];")
     for row in strategy_rows:
         if _blank(row.get("strategy_id")) or _blank(row.get("root_node_id")):
             continue
-        sid = str(row.get("strategy_id")).strip()
-        name = str(row.get("strategy_name") or sid).strip()
-        root = str(row.get("root_node_id")).strip()
-        visual_id = f"strategy::{sid}"
+        sid = str(row.get("strategy_id")).strip(); name = str(row.get("strategy_name") or sid).strip(); root = str(row.get("root_node_id")).strip(); visual_id=f"strategy::{sid}"
         lines.append(f"{q(visual_id)} [label={q(name)}, shape=\"box\"];")
         lines.append(f"{q(visual_id)} -> {q(root)};")
-
     for row in branch_rows:
         if _blank(row.get("from_node")) or _blank(row.get("to_node")):
             continue
-        origin = str(row.get("from_node")).strip()
-        child = str(row.get("to_node")).strip()
-        label = str(row.get("label") or "").strip()
-        probability = str(row.get("probability_parameter_id") or "").strip()
-        edge_label = label if not probability else f"{label} [{probability}]"
+        origin=str(row.get("from_node")).strip(); child=str(row.get("to_node")).strip(); label=str(row.get("label") or "").strip(); probability=str(row.get("probability_parameter_id") or "").strip(); mode=str(row.get("probability_mode") or "direct").strip().lower()
+        prob_label = f"1 - {probability}" if mode == "complement" else probability
+        edge_label = label if not probability else f"{label} [{prob_label}]"
         lines.append(f"{q(origin)} -> {q(child)} [label={q(edge_label)}];")
-
     lines.append("}")
     return "\n".join(lines)
