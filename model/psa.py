@@ -24,12 +24,21 @@ class PSAResult:
     parameter_draws: Mapping[str, np.ndarray]
     iterations: int
     seed: int
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class CEACResult:
     thresholds: np.ndarray
     probabilities: Mapping[str, np.ndarray]
+
+
+@dataclass(frozen=True)
+class _PSAPlan:
+    sampled: tuple[Parameter, ...]
+    independently_sampled: tuple[Parameter, ...]
+    dirichlet_groups: Mapping[str, tuple[Parameter, ...]]
+    warnings: tuple[str, ...]
 
 
 def _distribution_parameters(distribution: DistributionSpec) -> dict[str, float]:
@@ -39,7 +48,34 @@ def _distribution_parameters(distribution: DistributionSpec) -> dict[str, float]
     return values
 
 
+def _family(parameter: Parameter) -> str:
+    distribution = parameter.uncertainty.distribution
+    if distribution is None:
+        raise PSAConfigurationError(
+            f"Parameter '{parameter.id}' is marked for distribution uncertainty but has no distribution specification."
+        )
+    return distribution.family.strip().lower()
+
+
+def _dirichlet_alpha(parameter: Parameter) -> float:
+    distribution = parameter.uncertainty.distribution
+    assert distribution is not None
+    params = _distribution_parameters(distribution)
+    alpha = params.get("alpha", params.get("concentration"))
+    if alpha is None or alpha <= 0:
+        raise PSAConfigurationError(
+            f"Dirichlet component '{parameter.id}' requires alpha>0 "
+            "(or concentration>0)."
+        )
+    return alpha
+
+
 def sample_distribution(distribution: DistributionSpec, rng: np.random.Generator) -> float:
+    """Sample one scalar distribution.
+
+    Dirichlet distributions are intentionally excluded here because they are
+    multivariate and must be sampled jointly across a named correlation group.
+    """
     family = distribution.family.strip().lower()
     params = _distribution_parameters(distribution)
 
@@ -84,36 +120,85 @@ def sample_distribution(distribution: DistributionSpec, rng: np.random.Generator
             raise PSAConfigurationError("Uniform distributions require high>low.")
         return float(rng.uniform(low, high))
 
+    if family == "dirichlet":
+        raise PSAConfigurationError(
+            "Dirichlet distributions must be sampled jointly through a shared correlation_group."
+        )
+
     raise PSAConfigurationError(
         f"Unsupported PSA distribution family '{distribution.family}'. "
-        "Supported families are beta, gamma, lognormal, normal and uniform."
+        "Supported families are beta, gamma, lognormal, normal, uniform and grouped dirichlet."
     )
 
 
-def _validate_psa_parameters(parameters: Sequence[Parameter]) -> tuple[Parameter, ...]:
+def _build_psa_plan(parameters: Sequence[Parameter]) -> _PSAPlan:
     sampled = tuple(p for p in parameters if p.uncertainty.kind == "distribution")
     if not sampled:
         raise PSAConfigurationError(
             "PSA requires at least one parameter with uncertainty_kind='distribution'."
         )
 
-    groups: dict[str, list[str]] = {}
+    grouped: dict[str, list[Parameter]] = {}
+    ungrouped_dirichlet: list[str] = []
     for parameter in sampled:
-        if parameter.uncertainty.distribution is None:
-            raise PSAConfigurationError(
-                f"Parameter '{parameter.id}' is marked for distribution uncertainty but has no distribution specification."
-            )
-        if parameter.uncertainty.correlation_group:
-            groups.setdefault(parameter.uncertainty.correlation_group, []).append(parameter.id)
+        family = _family(parameter)
+        group = parameter.uncertainty.correlation_group
+        if family == "dirichlet" and not group:
+            ungrouped_dirichlet.append(parameter.id)
+        if group:
+            grouped.setdefault(group, []).append(parameter)
 
-    unsupported = {group: ids for group, ids in groups.items() if len(ids) > 1}
-    if unsupported:
-        details = "; ".join(f"{group}: {', '.join(ids)}" for group, ids in unsupported.items())
+    if ungrouped_dirichlet:
         raise PSAConfigurationError(
-            "Correlated PSA parameters were declared but a joint sampling distribution has not yet been specified. "
-            f"The engine will not silently sample them independently ({details})."
+            "Dirichlet parameters require a shared correlation_group. Missing for: "
+            + ", ".join(sorted(ungrouped_dirichlet))
+            + "."
         )
-    return sampled
+
+    dirichlet_groups: dict[str, tuple[Parameter, ...]] = {}
+    warnings: list[str] = []
+    dirichlet_ids: set[str] = set()
+
+    for group, members in grouped.items():
+        families = {_family(parameter) for parameter in members}
+        if "dirichlet" in families:
+            if families != {"dirichlet"}:
+                raise PSAConfigurationError(
+                    f"Correlation group '{group}' mixes Dirichlet and non-Dirichlet distributions. "
+                    "A joint group must use one coherent sampling structure."
+                )
+            if len(members) < 2:
+                raise PSAConfigurationError(
+                    f"Dirichlet correlation group '{group}' requires at least two component parameters."
+                )
+            for parameter in members:
+                _dirichlet_alpha(parameter)
+            dirichlet_groups[group] = tuple(members)
+            dirichlet_ids.update(parameter.id for parameter in members)
+        elif len(members) > 1:
+            warnings.append(
+                "Correlation group '"
+                + group
+                + "' is declared for "
+                + ", ".join(parameter.id for parameter in members)
+                + ". No joint distribution/covariance structure is configured, so these parameters "
+                "will be sampled independently. This can misrepresent decision uncertainty."
+            )
+
+    independently_sampled = tuple(
+        parameter for parameter in sampled if parameter.id not in dirichlet_ids
+    )
+    return _PSAPlan(
+        sampled=sampled,
+        independently_sampled=independently_sampled,
+        dirichlet_groups=dirichlet_groups,
+        warnings=tuple(warnings),
+    )
+
+
+def psa_configuration_warnings(parameters: Sequence[Parameter]) -> tuple[str, ...]:
+    """Return non-fatal methodological warnings for the configured PSA."""
+    return _build_psa_plan(parameters).warnings
 
 
 def run_tree_psa(
@@ -131,9 +216,11 @@ def run_tree_psa(
     if iterations > 1_000_000:
         raise PSAConfigurationError("PSA iterations are capped at 1,000,000 per run.")
 
-    sampled = _validate_psa_parameters(parameters)
+    plan = _build_psa_plan(parameters)
     rng = np.random.default_rng(seed)
-    parameter_draws = {parameter.id: np.empty(iterations, dtype=float) for parameter in sampled}
+    parameter_draws = {
+        parameter.id: np.empty(iterations, dtype=float) for parameter in plan.sampled
+    }
 
     base = run_decision_tree(
         tree,
@@ -146,9 +233,15 @@ def run_tree_psa(
     costs = {strategy_id: np.empty(iterations, dtype=float) for strategy_id in strategy_ids}
     outcomes = {strategy_id: np.empty(iterations, dtype=float) for strategy_id in strategy_ids}
 
+    dirichlet_alpha = {
+        group: np.asarray([_dirichlet_alpha(parameter) for parameter in members], dtype=float)
+        for group, members in plan.dirichlet_groups.items()
+    }
+
     for iteration in range(iterations):
         overrides: dict[str, float] = {}
-        for parameter in sampled:
+
+        for parameter in plan.independently_sampled:
             distribution = parameter.uncertainty.distribution
             assert distribution is not None
             draw = sample_distribution(distribution, rng)
@@ -158,6 +251,13 @@ def run_tree_psa(
                 )
             overrides[parameter.id] = draw
             parameter_draws[parameter.id][iteration] = draw
+
+        for group, members in plan.dirichlet_groups.items():
+            vector = rng.dirichlet(dirichlet_alpha[group])
+            for parameter, draw in zip(members, vector):
+                value = float(draw)
+                overrides[parameter.id] = value
+                parameter_draws[parameter.id][iteration] = value
 
         try:
             run = run_decision_tree(
@@ -170,7 +270,9 @@ def run_tree_psa(
             )
         except DecisionTreeValidationError as exc:
             raise PSAConfigurationError(
-                f"PSA draw {iteration + 1} produced an invalid tree: {exc}"
+                f"PSA draw {iteration + 1} produced an invalid tree: {exc}. "
+                "For mutually exclusive probabilities that must sum to 1, configure them as a "
+                "Dirichlet group rather than independent scalar distributions."
             ) from exc
 
         for row in run.strategies:
@@ -184,6 +286,7 @@ def run_tree_psa(
         parameter_draws=parameter_draws,
         iterations=iterations,
         seed=seed,
+        warnings=plan.warnings,
     )
 
 
