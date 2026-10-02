@@ -23,7 +23,7 @@ from model.tree_builder import compile_builder_tables
 
 MODEL_FILE_SCHEMA_VERSION = "0.1"
 AUDIT_SCHEMA_VERSION = "0.1"
-PLATFORM_VERSION = "0.4"
+PLATFORM_VERSION = "0.4.1"
 
 
 class PersistenceError(ValueError):
@@ -96,8 +96,6 @@ def build_decision_tree_bundle(
     strategies = _normalise_rows(strategy_rows)
     nodes = _normalise_rows(node_rows)
     branches = _normalise_rows(branch_rows)
-
-    # Compilation is the validation gate for saved decision-tree files.
     compile_builder_tables(parameters, strategies, nodes, branches)
 
     bundle: dict[str, Any] = {
@@ -123,10 +121,7 @@ def build_decision_tree_bundle(
             "nodes": nodes,
             "branches": branches,
         },
-        "metadata": {
-            "author": author.strip(),
-            "notes": notes.strip(),
-        },
+        "metadata": {"author": author.strip(), "notes": notes.strip()},
     }
     bundle["content_hash_sha256"] = model_content_hash(bundle)
     return bundle
@@ -142,60 +137,35 @@ def load_decision_tree_bundle(data: str | bytes) -> dict[str, Any]:
         parsed = json.loads(text)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PersistenceError("The uploaded model file is not valid UTF-8 JSON.") from exc
-
     if not isinstance(parsed, dict):
         raise PersistenceError("Model file root must be a JSON object.")
     if parsed.get("schema_version") != MODEL_FILE_SCHEMA_VERSION:
         raise PersistenceError(
-            f"Unsupported model schema version '{parsed.get('schema_version')}'. "
-            f"This build supports {MODEL_FILE_SCHEMA_VERSION}."
+            f"Unsupported model schema version '{parsed.get('schema_version')}'. This build supports {MODEL_FILE_SCHEMA_VERSION}."
         )
     if parsed.get("model_type") != "decision_tree":
         raise PersistenceError("This builder can currently load decision-tree model files only.")
-
     methods = parsed.get("methods")
     model = parsed.get("model")
     if not isinstance(methods, dict) or not isinstance(model, dict):
         raise PersistenceError("Model file is missing methods or model content.")
-
     required_methods = {
-        "reference_case_code",
-        "outcome_code",
-        "currency_code",
-        "perspective_label",
-        "included_cost_bearers",
-        "time_horizon",
-        "cost_discount_rate",
-        "outcome_discount_rate",
+        "reference_case_code", "outcome_code", "currency_code", "perspective_label",
+        "included_cost_bearers", "time_horizon", "cost_discount_rate", "outcome_discount_rate",
     }
     missing_methods = required_methods - set(methods)
     if missing_methods:
-        raise PersistenceError(
-            "Model file is missing method fields: " + ", ".join(sorted(missing_methods)) + "."
-        )
-
+        raise PersistenceError("Model file is missing method fields: " + ", ".join(sorted(missing_methods)) + ".")
     required_model = {"parameters", "strategies", "nodes", "branches"}
     missing_model = required_model - set(model)
     if missing_model:
-        raise PersistenceError(
-            "Model file is missing structural fields: " + ", ".join(sorted(missing_model)) + "."
-        )
-
-    compile_builder_tables(
-        model["parameters"],
-        model["strategies"],
-        model["nodes"],
-        model["branches"],
-    )
-
+        raise PersistenceError("Model file is missing structural fields: " + ", ".join(sorted(missing_model)) + ".")
+    compile_builder_tables(model["parameters"], model["strategies"], model["nodes"], model["branches"])
     stored_hash = parsed.get("content_hash_sha256")
     if stored_hash:
         actual_hash = model_content_hash(parsed)
         if stored_hash != actual_hash:
-            raise PersistenceError(
-                "Model content hash does not match the file contents. The file may have been edited or corrupted."
-            )
-
+            raise PersistenceError("Model content hash does not match the file contents. The file may have been edited or corrupted.")
     return _json_safe(parsed)
 
 
