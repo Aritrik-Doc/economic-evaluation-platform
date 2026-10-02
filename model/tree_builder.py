@@ -1,4 +1,4 @@
-"""Pure helpers for compiling hybrid decision-tree builder tables."""
+"""Pure helpers for compiling hybrid decision-tree builder data."""
 
 from __future__ import annotations
 
@@ -14,12 +14,14 @@ from model.decision_tree import (
     TimedReward,
     TreeBranch,
 )
+from model.parameterisation import migrate_parameter_row, parse_legacy_distribution_parameters
 from model.schema import (
     AssumptionSpec,
+    DeterministicUncertaintySpec,
     DistributionSpec,
     EvidenceSource,
     Parameter,
-    UncertaintySpec,
+    ProbabilisticUncertaintySpec,
 )
 
 
@@ -82,6 +84,16 @@ def _optional_int(value: Any) -> int | None:
     return int(number)
 
 
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "on"}
+
+
 def parse_id_list(value: Any) -> tuple[str, ...]:
     if _blank(value):
         return ()
@@ -113,35 +125,18 @@ def parse_reward_list(value: Any) -> tuple[TimedReward, ...]:
 
 
 def parse_distribution_parameters(value: Any) -> tuple[tuple[str, float], ...]:
-    """Parse distribution parameters written as ``name=value`` pairs."""
-    if _blank(value):
-        return ()
-    text = str(value).replace(";", ",")
-    parsed: list[tuple[str, float]] = []
-    names: set[str] = set()
-    for token in (item.strip() for item in text.split(",") if item.strip()):
-        if "=" not in token:
-            raise BuilderValidationError(
-                f"Distribution parameter '{token}' must use name=value syntax."
-            )
-        name, raw = token.split("=", 1)
-        name = name.strip().lower()
-        if not name or name in names:
-            raise BuilderValidationError("Distribution parameter names must be non-empty and unique.")
-        try:
-            number = float(raw.strip())
-        except ValueError as exc:
-            raise BuilderValidationError(
-                f"Distribution parameter '{name}' must be numeric."
-            ) from exc
-        names.add(name)
-        parsed.append((name, number))
-    return tuple(parsed)
+    """Compatibility parser for raw ``name=value`` or mapping inputs."""
+    try:
+        parsed = parse_legacy_distribution_parameters(value)
+    except (TypeError, ValueError) as exc:
+        raise BuilderValidationError(str(exc)) from exc
+    return tuple(parsed.items())
 
 
 def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter, ...]:
     parameters: list[Parameter] = []
-    for index, row in enumerate(rows, start=1):
+    for index, original_row in enumerate(rows, start=1):
+        row = migrate_parameter_row(original_row)
         if _blank(row.get("id")):
             continue
         parameter_id = _text(row.get("id"), f"Parameter row {index}: id")
@@ -157,12 +152,19 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
             statement=_text(row.get("assumption"), f"Parameter '{parameter_id}': assumption"),
             rationale=_text(row.get("assumption_rationale"), f"Parameter '{parameter_id}': assumption_rationale"),
         )
-        uncertainty_kind = _text(
-            row.get("uncertainty_kind"),
-            f"Parameter '{parameter_id}': uncertainty_kind",
-        ).lower()
+
+        dsa_enabled = _bool(row.get("dsa_enabled"))
+        dsa = DeterministicUncertaintySpec(
+            enabled=dsa_enabled,
+            rationale=_text(row.get("dsa_rationale"), f"Parameter '{parameter_id}': dsa_rationale"),
+            lower=_optional_float(row.get("dsa_lower")) if dsa_enabled else None,
+            upper=_optional_float(row.get("dsa_upper")) if dsa_enabled else None,
+        )
+
+        psa_enabled = _bool(row.get("psa_enabled"))
         distribution = None
-        if uncertainty_kind == "distribution":
+        correlation_group = None
+        if psa_enabled:
             family = _text(
                 row.get("distribution_family"),
                 f"Parameter '{parameter_id}': distribution_family",
@@ -171,14 +173,14 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
                 family=family,
                 parameters=parse_distribution_parameters(row.get("distribution_parameters")),
             )
-        uncertainty = UncertaintySpec(
-            kind=uncertainty_kind,
-            rationale=_text(row.get("uncertainty_rationale"), f"Parameter '{parameter_id}': uncertainty_rationale"),
-            lower=_optional_float(row.get("lower")),
-            upper=_optional_float(row.get("upper")),
+            correlation_group = _optional_text(row.get("correlation_group"))
+        psa = ProbabilisticUncertaintySpec(
+            enabled=psa_enabled,
+            rationale=_text(row.get("psa_rationale"), f"Parameter '{parameter_id}': psa_rationale"),
             distribution=distribution,
-            correlation_group=_optional_text(row.get("correlation_group")),
+            correlation_group=correlation_group,
         )
+
         kwargs: dict[str, Any] = {}
         if category == "cost":
             kwargs.update(
@@ -196,7 +198,8 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
                     category=category,
                     source=source,
                     assumption=assumption,
-                    uncertainty=uncertainty,
+                    dsa=dsa,
+                    psa=psa,
                     notes=_optional_text(row.get("notes")) or "",
                     **kwargs,
                 )
@@ -311,8 +314,10 @@ def compile_builder_tables(parameter_rows, strategy_rows, node_rows, branch_rows
 
 def structure_to_dot(strategy_rows, node_rows, branch_rows) -> str:
     import json
+
     def q(value: str) -> str:
         return json.dumps(str(value))
+
     lines = ["digraph DecisionTree {", 'rankdir="LR";', 'graph [pad="0.2", nodesep="0.35", ranksep="0.55"];', 'node [fontname="Arial"];']
     for row in node_rows:
         if _blank(row.get("id")):
@@ -331,13 +336,20 @@ def structure_to_dot(strategy_rows, node_rows, branch_rows) -> str:
     for row in strategy_rows:
         if _blank(row.get("strategy_id")) or _blank(row.get("root_node_id")):
             continue
-        sid = str(row.get("strategy_id")).strip(); name = str(row.get("strategy_name") or sid).strip(); root = str(row.get("root_node_id")).strip(); visual_id=f"strategy::{sid}"
+        sid = str(row.get("strategy_id")).strip()
+        name = str(row.get("strategy_name") or sid).strip()
+        root = str(row.get("root_node_id")).strip()
+        visual_id = f"strategy::{sid}"
         lines.append(f"{q(visual_id)} [label={q(name)}, shape=\"box\"];")
         lines.append(f"{q(visual_id)} -> {q(root)};")
     for row in branch_rows:
         if _blank(row.get("from_node")) or _blank(row.get("to_node")):
             continue
-        origin=str(row.get("from_node")).strip(); child=str(row.get("to_node")).strip(); label=str(row.get("label") or "").strip(); probability=str(row.get("probability_parameter_id") or "").strip(); mode=str(row.get("probability_mode") or "direct").strip().lower()
+        origin = str(row.get("from_node")).strip()
+        child = str(row.get("to_node")).strip()
+        label = str(row.get("label") or "").strip()
+        probability = str(row.get("probability_parameter_id") or "").strip()
+        mode = str(row.get("probability_mode") or "direct").strip().lower()
         prob_label = f"1 - {probability}" if mode == "complement" else probability
         edge_label = label if not probability else f"{label} [{prob_label}]"
         lines.append(f"{q(origin)} -> {q(child)} [label={q(edge_label)}];")
