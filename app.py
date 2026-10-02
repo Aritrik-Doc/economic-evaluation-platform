@@ -1,4 +1,4 @@
-"""Streamlit user interface for Economic Evaluation Platform v0.3."""
+"""Streamlit home and quick decision-analysis interface for Economic Evaluation Platform v0.5."""
 
 import streamlit as st
 
@@ -68,7 +68,10 @@ def parse_threshold(text: str) -> float | None:
 
 st.set_page_config(page_title="Economic Evaluation Platform", layout="wide")
 st.title("Economic Evaluation Platform")
-st.caption("Version 0.3 — reference-case-aware health-economic decision analysis")
+st.caption("Version 0.5 — HEOR/HTA decision analysis with decision-tree and cohort Markov modelling")
+st.info(
+    "Use this home screen for quick strategy-level incremental analysis. For parameter-driven modelling, open the Decision Tree Builder or Cohort Markov / State-Transition Builder from the page navigation."
+)
 
 with st.sidebar:
     st.header("Methods profile")
@@ -175,7 +178,7 @@ with st.sidebar:
 
     strategy_count = st.number_input("Number of strategies", min_value=2, max_value=10, value=3, step=1)
     st.caption(
-        "All costs entered in v0.3 must already be in the selected analysis currency. The schema now stores source currency, price year and dated market-FX provenance; automatic conversion will be connected when model parameters drive strategy totals."
+        "Quick-analysis costs must already be expressed in the selected analysis currency. Parameter-driven model pages retain source, price-year and uncertainty metadata for model inputs."
     )
 
 if threshold_value is None:
@@ -186,7 +189,7 @@ if threshold_value is None:
 
 st.subheader("Strategies")
 st.write(
-    "Enter expected per-patient costs and outcomes for each mutually exclusive strategy. These remain direct inputs in v0.3; the new model schema is the foundation for calculating them from parameters in later versions."
+    "Enter expected per-patient costs and outcomes for each mutually exclusive strategy. This quick screen is useful for checking incremental economic logic; the modelling pages calculate these totals from parameters and model structure."
 )
 
 strategies = []
