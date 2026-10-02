@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from model.decision_tree import DecisionTreeDefinition, run_decision_tree
@@ -14,6 +15,21 @@ from model.sensitivity import (
     threshold_analysis,
     two_way_sensitivity,
 )
+
+
+@dataclass(frozen=True)
+class TornadoResult:
+    parameter_id: str
+    label: str
+    low_value: float
+    high_value: float
+    low_inmb: float
+    high_inmb: float
+    base_inmb: float
+
+    @property
+    def impact(self) -> float:
+        return max(abs(self.low_inmb - self.base_inmb), abs(self.high_inmb - self.base_inmb))
 
 
 def _inmb_evaluator(
@@ -76,3 +92,33 @@ def threshold_tree_inmb(
     **context,
 ):
     return threshold_analysis(spec, _inmb_evaluator(tree, parameters, **context))
+
+
+def tornado_tree_inmb(
+    tree: DecisionTreeDefinition,
+    parameters: Sequence[Parameter],
+    **context,
+) -> tuple[TornadoResult, ...]:
+    """Run low/high one-way analyses for all parameters with explicit ranges."""
+
+    evaluate = _inmb_evaluator(tree, parameters, **context)
+    base_inmb = evaluate({})
+    rows: list[TornadoResult] = []
+    for parameter in parameters:
+        uncertainty = parameter.uncertainty
+        if uncertainty.kind != "range" or uncertainty.lower is None or uncertainty.upper is None:
+            continue
+        low_inmb = evaluate({parameter.id: uncertainty.lower})
+        high_inmb = evaluate({parameter.id: uncertainty.upper})
+        rows.append(
+            TornadoResult(
+                parameter_id=parameter.id,
+                label=parameter.label,
+                low_value=uncertainty.lower,
+                high_value=uncertainty.upper,
+                low_inmb=low_inmb,
+                high_inmb=high_inmb,
+                base_inmb=base_inmb,
+            )
+        )
+    return tuple(sorted(rows, key=lambda row: row.impact, reverse=True))
