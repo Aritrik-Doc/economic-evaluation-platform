@@ -14,7 +14,13 @@ from model.decision_tree import (
     TimedReward,
     TreeBranch,
 )
-from model.schema import AssumptionSpec, EvidenceSource, Parameter, UncertaintySpec
+from model.schema import (
+    AssumptionSpec,
+    DistributionSpec,
+    EvidenceSource,
+    Parameter,
+    UncertaintySpec,
+)
 
 
 class BuilderValidationError(ValueError):
@@ -106,6 +112,33 @@ def parse_reward_list(value: Any) -> tuple[TimedReward, ...]:
     return tuple(rewards)
 
 
+def parse_distribution_parameters(value: Any) -> tuple[tuple[str, float], ...]:
+    """Parse distribution parameters written as ``name=value`` pairs."""
+    if _blank(value):
+        return ()
+    text = str(value).replace(";", ",")
+    parsed: list[tuple[str, float]] = []
+    names: set[str] = set()
+    for token in (item.strip() for item in text.split(",") if item.strip()):
+        if "=" not in token:
+            raise BuilderValidationError(
+                f"Distribution parameter '{token}' must use name=value syntax."
+            )
+        name, raw = token.split("=", 1)
+        name = name.strip().lower()
+        if not name or name in names:
+            raise BuilderValidationError("Distribution parameter names must be non-empty and unique.")
+        try:
+            number = float(raw.strip())
+        except ValueError as exc:
+            raise BuilderValidationError(
+                f"Distribution parameter '{name}' must be numeric."
+            ) from exc
+        names.add(name)
+        parsed.append((name, number))
+    return tuple(parsed)
+
+
 def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter, ...]:
     parameters: list[Parameter] = []
     for index, row in enumerate(rows, start=1):
@@ -124,11 +157,27 @@ def compile_parameter_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Parameter
             statement=_text(row.get("assumption"), f"Parameter '{parameter_id}': assumption"),
             rationale=_text(row.get("assumption_rationale"), f"Parameter '{parameter_id}': assumption_rationale"),
         )
+        uncertainty_kind = _text(
+            row.get("uncertainty_kind"),
+            f"Parameter '{parameter_id}': uncertainty_kind",
+        ).lower()
+        distribution = None
+        if uncertainty_kind == "distribution":
+            family = _text(
+                row.get("distribution_family"),
+                f"Parameter '{parameter_id}': distribution_family",
+            ).lower()
+            distribution = DistributionSpec(
+                family=family,
+                parameters=parse_distribution_parameters(row.get("distribution_parameters")),
+            )
         uncertainty = UncertaintySpec(
-            kind=_text(row.get("uncertainty_kind"), f"Parameter '{parameter_id}': uncertainty_kind"),
+            kind=uncertainty_kind,
             rationale=_text(row.get("uncertainty_rationale"), f"Parameter '{parameter_id}': uncertainty_rationale"),
             lower=_optional_float(row.get("lower")),
             upper=_optional_float(row.get("upper")),
+            distribution=distribution,
+            correlation_group=_optional_text(row.get("correlation_group")),
         )
         kwargs: dict[str, Any] = {}
         if category == "cost":
