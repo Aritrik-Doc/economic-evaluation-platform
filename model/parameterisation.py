@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from math import exp, isfinite, log, sqrt
+from math import isfinite, log, sqrt
 from typing import Any, Mapping
 
 
@@ -148,7 +148,12 @@ def distribution_parameters_text(parameters: Mapping[str, float]) -> str:
 
 
 def migrate_parameter_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Convert pre-v0.4.1 table rows to the split DSA/PSA representation."""
+    """Convert pre-v0.4.1 table rows to the split DSA/PSA representation.
+
+    Migration deliberately leaves legacy raw distribution text untouched. The
+    decision-tree compiler owns parsing/validation so callers continue to receive
+    builder-level validation errors for malformed saved rows.
+    """
     migrated = dict(row)
     if "dsa_enabled" in migrated or "psa_enabled" in migrated:
         migrated.setdefault("dsa_enabled", False)
@@ -168,10 +173,6 @@ def migrate_parameter_row(row: Mapping[str, Any]) -> dict[str, Any]:
     migrated["psa_enabled"] = kind in {"distribution", "range_and_distribution"}
     migrated["psa_rationale"] = rationale
     migrated.setdefault("distribution_parameterisation", "")
-    if migrated["psa_enabled"]:
-        migrated["distribution_parameters"] = parse_legacy_distribution_parameters(
-            migrated.get("distribution_parameters")
-        )
-    else:
+    if not migrated["psa_enabled"]:
         migrated.setdefault("distribution_parameters", {})
     return migrated
