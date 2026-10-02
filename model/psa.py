@@ -1,0 +1,244 @@
+"""Probabilistic sensitivity analysis for decision-tree models."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+from typing import Mapping, Sequence
+
+import numpy as np
+
+from model.decision_tree import DecisionTreeDefinition, DecisionTreeValidationError, run_decision_tree
+from model.schema import DistributionSpec, Parameter
+
+
+class PSAConfigurationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class PSAResult:
+    strategy_ids: tuple[str, ...]
+    costs: Mapping[str, np.ndarray]
+    outcomes: Mapping[str, np.ndarray]
+    parameter_draws: Mapping[str, np.ndarray]
+    iterations: int
+    seed: int
+
+
+@dataclass(frozen=True)
+class CEACResult:
+    thresholds: np.ndarray
+    probabilities: Mapping[str, np.ndarray]
+
+
+def _distribution_parameters(distribution: DistributionSpec) -> dict[str, float]:
+    values = {name.lower(): float(value) for name, value in distribution.parameters}
+    if len(values) != len(distribution.parameters):
+        raise PSAConfigurationError("Distribution parameter names must be unique.")
+    return values
+
+
+def sample_distribution(distribution: DistributionSpec, rng: np.random.Generator) -> float:
+    family = distribution.family.strip().lower()
+    params = _distribution_parameters(distribution)
+
+    if family == "beta":
+        alpha = params.get("alpha")
+        beta = params.get("beta")
+        if alpha is None or beta is None or alpha <= 0 or beta <= 0:
+            raise PSAConfigurationError("Beta distributions require alpha>0 and beta>0.")
+        return float(rng.beta(alpha, beta))
+
+    if family == "gamma":
+        shape = params.get("shape", params.get("alpha"))
+        scale = params.get("scale")
+        if scale is None:
+            rate = params.get("rate", params.get("lambda"))
+            if rate is not None and rate > 0:
+                scale = 1.0 / rate
+        if shape is None or scale is None or shape <= 0 or scale <= 0:
+            raise PSAConfigurationError(
+                "Gamma distributions require shape and scale, or alpha with a positive rate/lambda."
+            )
+        return float(rng.gamma(shape, scale))
+
+    if family == "lognormal":
+        meanlog = params.get("meanlog")
+        sdlog = params.get("sdlog")
+        if meanlog is None or sdlog is None or sdlog <= 0:
+            raise PSAConfigurationError("Lognormal distributions require meanlog and sdlog>0.")
+        return float(rng.lognormal(meanlog, sdlog))
+
+    if family == "normal":
+        mean = params.get("mean")
+        sd = params.get("sd")
+        if mean is None or sd is None or sd <= 0:
+            raise PSAConfigurationError("Normal distributions require mean and sd>0.")
+        return float(rng.normal(mean, sd))
+
+    if family == "uniform":
+        low = params.get("low")
+        high = params.get("high")
+        if low is None or high is None or high <= low:
+            raise PSAConfigurationError("Uniform distributions require high>low.")
+        return float(rng.uniform(low, high))
+
+    raise PSAConfigurationError(
+        f"Unsupported PSA distribution family '{distribution.family}'. "
+        "Supported families are beta, gamma, lognormal, normal and uniform."
+    )
+
+
+def _validate_psa_parameters(parameters: Sequence[Parameter]) -> tuple[Parameter, ...]:
+    sampled = tuple(p for p in parameters if p.uncertainty.kind == "distribution")
+    if not sampled:
+        raise PSAConfigurationError(
+            "PSA requires at least one parameter with uncertainty_kind='distribution'."
+        )
+
+    groups: dict[str, list[str]] = {}
+    for parameter in sampled:
+        if parameter.uncertainty.distribution is None:
+            raise PSAConfigurationError(
+                f"Parameter '{parameter.id}' is marked for distribution uncertainty but has no distribution specification."
+            )
+        if parameter.uncertainty.correlation_group:
+            groups.setdefault(parameter.uncertainty.correlation_group, []).append(parameter.id)
+
+    unsupported = {group: ids for group, ids in groups.items() if len(ids) > 1}
+    if unsupported:
+        details = "; ".join(f"{group}: {', '.join(ids)}" for group, ids in unsupported.items())
+        raise PSAConfigurationError(
+            "Correlated PSA parameters were declared but a joint sampling distribution has not yet been specified. "
+            f"The engine will not silently sample them independently ({details})."
+        )
+    return sampled
+
+
+def run_tree_psa(
+    tree: DecisionTreeDefinition,
+    parameters: Sequence[Parameter],
+    *,
+    iterations: int,
+    seed: int,
+    included_cost_bearers: Sequence[str] | None = None,
+    cost_discount_rate: float = 0.0,
+    outcome_discount_rate: float = 0.0,
+) -> PSAResult:
+    if iterations < 1:
+        raise PSAConfigurationError("PSA iterations must be positive.")
+    if iterations > 1_000_000:
+        raise PSAConfigurationError("PSA iterations are capped at 1,000,000 per run.")
+
+    sampled = _validate_psa_parameters(parameters)
+    rng = np.random.default_rng(seed)
+    parameter_draws = {parameter.id: np.empty(iterations, dtype=float) for parameter in sampled}
+
+    base = run_decision_tree(
+        tree,
+        parameters,
+        included_cost_bearers=included_cost_bearers,
+        cost_discount_rate=cost_discount_rate,
+        outcome_discount_rate=outcome_discount_rate,
+    )
+    strategy_ids = tuple(row.strategy_id for row in base.strategies)
+    costs = {strategy_id: np.empty(iterations, dtype=float) for strategy_id in strategy_ids}
+    outcomes = {strategy_id: np.empty(iterations, dtype=float) for strategy_id in strategy_ids}
+
+    for iteration in range(iterations):
+        overrides: dict[str, float] = {}
+        for parameter in sampled:
+            distribution = parameter.uncertainty.distribution
+            assert distribution is not None
+            draw = sample_distribution(distribution, rng)
+            if not isfinite(draw):
+                raise PSAConfigurationError(
+                    f"Distribution for '{parameter.id}' produced a non-finite draw."
+                )
+            overrides[parameter.id] = draw
+            parameter_draws[parameter.id][iteration] = draw
+
+        try:
+            run = run_decision_tree(
+                tree,
+                parameters,
+                overrides=overrides,
+                included_cost_bearers=included_cost_bearers,
+                cost_discount_rate=cost_discount_rate,
+                outcome_discount_rate=outcome_discount_rate,
+            )
+        except DecisionTreeValidationError as exc:
+            raise PSAConfigurationError(
+                f"PSA draw {iteration + 1} produced an invalid tree: {exc}"
+            ) from exc
+
+        for row in run.strategies:
+            costs[row.strategy_id][iteration] = row.expected_cost
+            outcomes[row.strategy_id][iteration] = row.expected_outcome
+
+    return PSAResult(
+        strategy_ids=strategy_ids,
+        costs=costs,
+        outcomes=outcomes,
+        parameter_draws=parameter_draws,
+        iterations=iterations,
+        seed=seed,
+    )
+
+
+def incremental_plane(
+    result: PSAResult,
+    *,
+    intervention_id: str,
+    comparator_id: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if intervention_id not in result.strategy_ids or comparator_id not in result.strategy_ids:
+        raise ValueError("CE-plane comparison references an unknown strategy.")
+    delta_effect = result.outcomes[intervention_id] - result.outcomes[comparator_id]
+    delta_cost = result.costs[intervention_id] - result.costs[comparator_id]
+    return delta_effect, delta_cost
+
+
+def ceac(result: PSAResult, thresholds: Sequence[float]) -> CEACResult:
+    threshold_array = np.asarray(tuple(float(value) for value in thresholds), dtype=float)
+    if threshold_array.size == 0:
+        raise ValueError("CEAC requires at least one threshold.")
+    if np.any(~np.isfinite(threshold_array)) or np.any(threshold_array < 0):
+        raise ValueError("CEAC thresholds must be finite and non-negative.")
+
+    probabilities = {
+        strategy_id: np.zeros(threshold_array.size, dtype=float)
+        for strategy_id in result.strategy_ids
+    }
+
+    for index, threshold in enumerate(threshold_array):
+        nmb = np.vstack(
+            [
+                threshold * result.outcomes[strategy_id] - result.costs[strategy_id]
+                for strategy_id in result.strategy_ids
+            ]
+        )
+        winners = np.argmax(nmb, axis=0)
+        for strategy_index, strategy_id in enumerate(result.strategy_ids):
+            probabilities[strategy_id][index] = float(np.mean(winners == strategy_index))
+
+    return CEACResult(thresholds=threshold_array, probabilities=probabilities)
+
+
+def pairwise_probability_cost_effective(
+    result: PSAResult,
+    *,
+    intervention_id: str,
+    comparator_id: str,
+    willingness_to_pay: float,
+) -> float:
+    if willingness_to_pay < 0 or not isfinite(willingness_to_pay):
+        raise ValueError("Willingness-to-pay threshold must be finite and non-negative.")
+    delta_effect, delta_cost = incremental_plane(
+        result,
+        intervention_id=intervention_id,
+        comparator_id=comparator_id,
+    )
+    inmb = willingness_to_pay * delta_effect - delta_cost
+    return float(np.mean(inmb > 0))
