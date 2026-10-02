@@ -2,9 +2,9 @@
 
 An open, auditable health-economic modelling and decision-analysis platform aimed at HEOR, HTA, and eventually payer / market-access workflows.
 
-## Current development milestone: 0.4
+## Current development milestone: 0.4.1
 
-Version 0.4 provides the first **parameter-driven model engine**: a decision tree with a **hybrid structured/visual builder**, automatic discounting, deterministic sensitivity analysis, probabilistic sensitivity analysis, model persistence and audit exports.
+Version 0.4.1 focuses on making the decision-tree modeller usable by people who do not routinely build decision trees. The analytical engine remains parameter-driven, but the primary interface is now a **guided, constrained visual modeller** rather than a spreadsheet-first workflow.
 
 The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
 
@@ -12,45 +12,81 @@ The v0.3 methods/reference-case layer remains the methodological foundation bene
 
 ### NICE technology appraisal
 
-The current profile uses current NICE PMG36 methods, including:
-
-- QALYs as the reference-case economic outcome
-- NHS and Personal Social Services cost perspective
-- 3.5% annual discounting for costs and health outcomes
-- a horizon long enough to reflect all important differences in costs and outcomes
-- current standard technology-appraisal threshold range of **£25,000–£35,000 per QALY gained**
+The current profile uses current NICE PMG36 methods, including QALYs as the reference-case economic outcome, NHS/PSS costs, 3.5% annual discounting for costs and health outcomes, a horizon long enough to reflect important differences, and the current £25,000–£35,000 per QALY standard technology-appraisal range.
 
 Source: https://www.nice.org.uk/process/pmg36/chapter/economic-evaluation-2/
 
 ### HTAIn / Indian Reference Case (2023)
 
-The platform treats the 2023 Indian Reference Case as the governing Indian economic-evaluation reference case:
-
-- QALYs preferred
-- DALYs supported in appropriate circumstances and represented as **DALYs averted**
-- life-years gained retained as a supplementary measure
-- abridged societal base-case perspective
-- separate healthcare-payer results should also be reportable
-- 3% annual discounting for costs and outcomes, with 0–5% explored in sensitivity analysis
-- current practice as comparator; multiple comparators possible
-- no single monetary decision threshold hard-coded into the reference case
+The platform treats the 2023 Indian Reference Case as the governing Indian economic-evaluation reference case: QALYs preferred, DALYs supported where appropriate and represented as **DALYs averted**, life-years gained retained as supplementary, abridged-societal base case, 3% discounting for costs and outcomes, current practice as comparator, and no single monetary decision threshold hard-coded into the profile.
 
 Source: https://pmc.ncbi.nlm.nih.gov/articles/PMC10485782/
 
-## Hybrid decision-tree builder
+## Guided decision-tree modeller
 
-`pages/1_Decision_Tree_Builder.py` combines structured editable tables with a live Graphviz tree. The same structure drives both the visual diagram and the analytical model.
+`pages/1_Decision_Tree_Builder.py` now provides five main work areas:
 
-The builder supports:
+1. **Model design** — interactive constrained canvas with guided strategy, chance-event and terminal-outcome creation.
+2. **Parameters** — parameter cards with separate Base case, DSA, PSA, and Evidence/assumption sections.
+3. **Base case** — discounted expected costs/outcomes and fully incremental cost-effectiveness analysis.
+4. **Analyse** — a DSA/PSA segmented selector that changes the analysis view without rewriting parameter settings.
+5. **Save / export** — model JSON, results CSV, PSA simulations and audit records.
 
-- parameter library with source, assumption and uncertainty provenance
-- multiple strategies
-- chance and terminal nodes
-- direct and complement branch probabilities (`p` and `1-p`)
-- timed cost and health-outcome rewards using `parameter@years`
-- automatic annual discounting with separate cost/outcome rates
-- computational perspective through cost bearers
-- fully incremental cost-effectiveness analysis
+The visual canvas allows node movement and selection but deliberately disables freehand edge creation and editing menus. New pathways are created through constrained controls so the modeller specifies the event, probability rule and next node together. The raw table representation remains available under **Advanced** for experienced users, bulk edits and debugging.
+
+### Decision-tree concepts exposed in the UI
+
+- **Chance event**: an uncertain event with two or more possible pathways.
+- **Terminal outcome**: the end of a modelled pathway.
+- **Direct probability**: a branch uses parameter `p`.
+- **Complement probability**: a branch uses `1-p`, useful for binary events.
+- **Timed reward**: a cost or health outcome attached to a node at a specified number of years from model start.
+
+The engine supports multiple mutually exclusive strategies, shared or separate downstream structures, timed costs/outcomes, automatic discounting, computational perspective through cost bearers, and structural validation before analysis.
+
+## Parameter uncertainty: DSA and PSA are independent
+
+Version 0.4.1 separates deterministic and probabilistic uncertainty in the schema. A parameter can therefore participate in **both DSA and PSA at the same time**.
+
+Each parameter stores:
+
+- base-case value and unit
+- DSA enabled/disabled, low value, high value and rationale
+- PSA enabled/disabled, distribution, distribution parameters, optional correlation/joint-sampling group and rationale
+- evidence source
+- assumption statement and rationale
+- cost metadata where applicable
+
+The DSA/PSA control in the Analyse tab only changes which analysis is shown; it does not overwrite the stored uncertainty specification.
+
+Older saved decision-tree files using the previous combined `range` / `distribution` uncertainty field are migrated at load/compile time into the split representation.
+
+## Guided PSA distribution parameterisation
+
+The modeller still provides evidence-informed distribution-family suggestions but never silently applies them. Once the user selects a family, the UI asks for the variables relevant to that family rather than requiring raw `name=value` strings.
+
+Supported guided entry modes currently include:
+
+- **Beta** — Alpha + Beta, or Mean + SE
+- **Gamma** — Shape + Scale, or Mean + SD
+- **Normal** — Mean + SD, or Estimate + 95% CI
+- **Lognormal** — Meanlog + SDlog, or arithmetic Mean + SD
+- **Uniform** — Minimum + Maximum
+- **Dirichlet** — one positive Alpha concentration per component in a shared joint-sampling group
+
+The UI converts friendly parameterisations into a canonical internal distribution representation before PSA.
+
+Current advisory starting points include single bounded probabilities → Beta; mutually exclusive probabilities summing to one → Dirichlet; non-negative costs → Gamma; positive relative-effect measures → Lognormal; genuinely 0–1 utilities → Beta; and approximately symmetric continuous parameters → Normal where its support is appropriate.
+
+## Deterministic sensitivity analysis
+
+The builder provides one-way analysis, tornado diagrams, two-way sensitivity analysis with a pairwise decision map, and threshold analysis. These analyses rerun the full decision tree and use incremental net monetary benefit for the selected intervention/comparator pair.
+
+## Probabilistic sensitivity analysis
+
+PSA reruns the complete model for every draw, including discounting and perspective filtering. Outputs include a cost-effectiveness plane, CEAC across all strategies, pairwise probability of cost effectiveness, and simulation-level exports.
+
+Grouped Dirichlet components are sampled jointly so simulated probabilities remain non-negative and sum to one. Other declared correlation groups without a configured joint distribution are sampled independently with a prominent methodological warning that is retained in the audit record. Structurally invalid probability draws still stop the run.
 
 ## Economic outcomes
 
@@ -60,112 +96,32 @@ All decision-analysis benefit measures are oriented so that **higher = more heal
 - life-years gained
 - DALYs averted
 
-OS and PFS remain clinical/survival endpoints for later survival-based model structures rather than interchangeable economic outcome measures.
-
-## Deterministic sensitivity analysis
-
-The builder provides:
-
-- one-way sensitivity analysis
-- **tornado diagram** using explicit low/high parameter ranges
-- **two-way sensitivity analysis**
-- **two-way pairwise decision map** showing which strategy is preferred across the parameter grid
-- **threshold analysis** identifying the parameter value at which INMB crosses zero
-
-These analyses rerun the complete decision tree and use incremental net monetary benefit for a selected intervention/comparator pair.
-
-## Probabilistic sensitivity analysis
-
-PSA is implemented for decision trees.
-
-The platform deliberately does **not** choose distributions silently. Instead, it shows evidence-informed family suggestions and requires the user to confirm the family and supply distribution parameters derived from the evidence.
-
-Current advisory starting points include:
-
-- probabilities/proportions → Beta for a single bounded probability
-- a vector of mutually exclusive probabilities constrained to sum to 1 → Dirichlet
-- non-negative costs → Gamma
-- hazard ratios / risk ratios / odds ratios → Lognormal
-- utilities genuinely bounded 0–1 → Beta, with a warning that utility values may be negative in some systems
-- approximately symmetric continuous parameters → Normal where its support is appropriate
-
-Uniform is available as a user-selected option but is not automatically inferred from a low/high range.
-
-Supported PSA distributions are:
-
-- Beta (`alpha`, `beta`)
-- Gamma (`shape`, `scale`, or equivalent alpha/rate parameterisation)
-- Lognormal (`meanlog`, `sdlog`)
-- Normal (`mean`, `sd`)
-- Uniform (`low`, `high`)
-- grouped Dirichlet (one positive `alpha` per component within a shared `correlation_group`)
-
-PSA sampling is reproducible through an explicit random seed. Only parameters explicitly marked with distribution uncertainty are sampled.
-
-### Correlation behavior
-
-Parameters can carry a `correlation_group`.
-
-For probability vectors configured as grouped Dirichlet components, the engine performs one joint Dirichlet draw per iteration, so the simulated probabilities remain non-negative and sum to 1.
-
-For other declared correlation groups where no covariance or joint sampling structure has yet been provided, PSA is allowed to run but those parameters are sampled independently. The platform displays a prominent methodological warning and carries that warning into the exported audit record. This is intended to support exploratory analysis without pretending that the correlation has been handled correctly.
-
-If independent probability draws make the tree structurally invalid, the run still stops and recommends using a coherent joint probability model such as Dirichlet.
-
-### Probabilistic outputs
-
-The builder provides:
-
-- **cost-effectiveness plane** for a selected intervention/comparator pair
-- **cost-effectiveness acceptability curve (CEAC)** across all strategies
-- pairwise probability of cost effectiveness at the chosen threshold
-- exportable simulation-level PSA draws
-
-The PSA engine reruns the complete model for every draw, including perspective filtering and discounting.
+OS and PFS remain clinical/survival endpoints for later survival-based model structures.
 
 ## Save / load / export and audit trail
 
-Decision-tree models can be saved as versioned, human-readable JSON and loaded back into the builder.
+Decision-tree models can be saved as versioned human-readable JSON and loaded back into the guided builder. Saved models include methods settings, perspective, horizon, discounting, threshold, parameters/provenance, DSA and PSA specifications, strategies, nodes and branches, plus a SHA-256 content hash.
 
-A saved model includes methods settings, perspective, time horizon, discounting, threshold, all parameters and provenance, distributions, strategies, nodes and branches, plus a SHA-256 content hash. The file is structurally revalidated on load and a hash mismatch is treated as possible editing or corruption.
+Exports include complete model JSON, deterministic results CSV, PSA simulation-level CSV, and audit-trail JSON. Explicit audit records contain a unique run ID, UTC timestamp, platform version, model hash, run settings, results summary, warnings and the complete model snapshot used for that run.
 
-The builder can export:
+## Currency and provenance
 
-- complete model JSON
-- deterministic results CSV
-- latest PSA simulation-level CSV
-- audit-trail JSON
-
-Audit records are explicit user-created run records. Each contains a unique run id, UTC timestamp, platform version, model hash, analysis type, run settings, results summary, warnings and the complete model snapshot used for that run.
-
-See `docs/uncertainty-and-audit.md` for the detailed conventions.
-
-## Mandatory provenance
-
-Every model parameter must explicitly carry:
-
-- evidence source
-- assumption statement and rationale
-- uncertainty specification and rationale
-
-Cost parameters additionally require currency, price year and cost bearer(s), plus dated market-FX provenance when conversion is used.
-
-## Currency approach
-
-The platform uses **market currency conversion**, not PPP/international-dollar conversion. Price-year adjustment is treated separately from currency conversion.
+The platform uses **market currency conversion**, not PPP/international-dollar conversion. Price-year adjustment remains separate from currency conversion. Evidence source, assumption/rationale and uncertainty/rationale are mandatory model concepts; costs additionally carry currency, price year and cost bearer(s), with FX provenance when conversion is used.
 
 ## Key files
 
 - `model/reference_cases.py` — NICE, HTAIn and custom methods profiles
-- `model/schema.py` — model, parameter, provenance and uncertainty definitions
+- `model/schema.py` — model, provenance and split DSA/PSA uncertainty definitions
+- `model/parameterisation.py` — guided distribution conversions and legacy-row migration
+- `model/guided_tree.py` — constrained tree-construction operations
 - `model/decision_tree.py` — parameter-driven decision-tree engine
-- `model/tree_builder.py` — compiler from editable UI tables to model objects
-- `model/tree_sensitivity.py` — deterministic INMB sensitivity helpers and tornado summaries
+- `model/tree_builder.py` — compiler from UI structures to model objects
+- `model/tree_sensitivity.py` — deterministic INMB sensitivity helpers
 - `model/uncertainty_defaults.py` — advisory PSA distribution suggestions
-- `model/psa.py` — PSA simulation, grouped Dirichlet sampling, CE-plane data and CEAC calculations
-- `model/persistence.py` — versioned model files, hashes, CSV helpers and audit records
-- `pages/1_Decision_Tree_Builder.py` — hybrid builder, visual outputs and file/audit UI
-- `docs/methods.md` — core methodological specification
+- `model/psa.py` — PSA, grouped Dirichlet sampling, CE-plane and CEAC calculations
+- `model/persistence.py` — model files, hashes, exports and audit records
+- `pages/1_Decision_Tree_Builder.py` — guided visual modeller and analyses
+- `docs/methods.md` — methodological specification
 - `docs/uncertainty-and-audit.md` — PSA/correlation/persistence/audit conventions
 
 ## Run locally
@@ -185,9 +141,6 @@ Then open the **Decision Tree Builder** page.
 pytest -q
 ```
 
-## Next milestones
+## Next milestone
 
-1. Add explicit covariance-matrix / multivariate-normal joint sampling and other joint distributions where methodologically justified.
-2. Add scenario-management workflows and richer reporting/export.
-3. Improve audit/version comparison, including model-difference summaries between saved versions.
-4. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective, uncertainty, persistence and visualisation framework.
+After v0.4.1 is tested in the UI, the next model engine is the **cohort state-transition / Markov modeller**, reusing the same reference-case, parameter, provenance, uncertainty, persistence and visualisation framework.
