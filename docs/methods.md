@@ -1,4 +1,4 @@
-# Methods specification — v0.3
+# Methods specification — v0.4
 
 This document records the methodological choices encoded in the platform. It is intended to make model behaviour auditable and to separate recognised HTA reference cases from user-defined methods.
 
@@ -95,19 +95,73 @@ Perspective is not just report metadata. Cost parameters carry one or more cost 
 
 This allows one underlying model to support, for example, the NICE NHS/PSS perspective and the Indian abridged-societal and healthcare-payer perspectives without rebuilding the clinical model.
 
-## Sensitivity analysis
+## Decision-tree timing and discounting
 
-Version 0.3 defines first-class specifications for:
+Decision-tree node rewards can be time-stamped using absolute time from model start, for example `followup_cost@2.5`. Costs and outcomes are discounted separately using the annual reference-case or custom rates. Untimed rewards are treated as occurring at year 0.
+
+Binary branches can use a direct probability `p` and a complement branch `1-p`. This is particularly important for sensitivity analysis because varying one underlying probability should not make a mutually exclusive binary node cease to sum to 1. The platform does not silently renormalise invalid probabilities.
+
+## Deterministic sensitivity analysis
+
+The builder supports:
 
 - one-way deterministic sensitivity analysis
+- **tornado diagrams** from explicit low/high parameter ranges
 - **two-way sensitivity analysis**
-- **threshold analysis**
-- scenario analysis
-- probabilistic sensitivity analysis
+- **two-way pairwise decision maps** based on the sign of INMB
+- **threshold analysis** identifying parameter switching values
 
-The two-way helper evaluates the full Cartesian grid of two parameter values. Threshold analysis searches for a parameter switching value where a decision metric (for example incremental net monetary benefit) reaches a specified target.
+The two-way helper evaluates the full Cartesian grid of two parameter values. Threshold analysis searches for a parameter switching value where incremental net monetary benefit reaches zero for a user-selected intervention and comparator.
 
-For NICE, current PMG36 explicitly describes threshold analysis as useful for identifying switching values and recognises deterministic analyses exploring individual or multiple correlated parameters. Threshold analysis should not be used when the parameter is highly correlated with other influential parameters.
+For NICE, current PMG36 explicitly recognises tornado displays as useful for deterministic sensitivity analysis, and describes threshold analysis as useful for identifying parameter boundaries. Deterministic results are treated as explanatory tools rather than substitutes for joint probabilistic uncertainty where a model is non-linear.
+
+## Probabilistic sensitivity analysis
+
+Current NICE guidance states that distributions used in PSA should represent the available evidence and should not be selected arbitrarily. The platform therefore uses **evidence-informed distribution suggestions** rather than automatic distribution assignment.
+
+Sources informing this design include:
+
+- NICE PMG36 economic-evaluation methods: https://www.nice.org.uk/process/pmg36/chapter/economic-evaluation-2/
+- NICE company evidence-submission guidance, which lists CE-plane scatter plots and CEACs as appropriate presentations of probabilistic results: https://www.nice.org.uk/process/pmg24/chapter/cost-effectiveness
+- ISPOR-SMDM model-parameter estimation and uncertainty good-research-practice report: https://pubmed.ncbi.nlm.nih.gov/22990087/
+
+### Advisory distribution families
+
+The current suggestion engine uses the following common starting points, always subject to confirmation against the actual evidence:
+
+- probabilities/proportions bounded 0–1 → **Beta**
+- non-negative costs → **Gamma**
+- positive relative treatment effects such as hazard ratios, risk ratios and odds ratios → **Lognormal**
+- utility values genuinely bounded 0–1 → **Beta**, with an explicit caution that many utility systems can generate values below 0
+- continuous approximately symmetric parameters → **Normal** where unbounded support is defensible
+
+A **Uniform** family is available as a user-selected option but is not automatically suggested merely because low/high values exist.
+
+The platform does not infer uncertainty magnitude. Distribution parameters such as alpha/beta, shape/scale, meanlog/sdlog, or mean/SD must be supplied from the evidence source or a justified elicitation process.
+
+### Correlation
+
+Parameters may carry a `correlation_group`. If more than one PSA parameter declares the same group, the current PSA engine stops rather than silently sampling those parameters independently. Joint sampling structures (for example multivariate normal or Dirichlet-based grouped sampling where appropriate) are a planned extension.
+
+### PSA implementation and outputs
+
+The decision-tree PSA engine:
+
+- samples only parameters explicitly marked with distribution uncertainty
+- preserves a reproducible random seed
+- reruns the full decision tree for every draw
+- applies perspective and discounting within each draw
+- stores simulated costs and outcomes by strategy
+
+The builder provides:
+
+- a **cost-effectiveness plane** for a chosen intervention/comparator pair
+- a **cost-effectiveness acceptability curve (CEAC)** across all strategies
+- pairwise probability of cost effectiveness at the selected threshold
+
+CEAC ties are shared across exactly tied strategies rather than being assigned arbitrarily to whichever strategy appears first.
+
+Supported scalar distribution families in v0.4 are Beta, Gamma, Lognormal, Normal and Uniform. More complex joint distributions and empirical resampling remain future work.
 
 ## Outcome direction
 
