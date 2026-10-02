@@ -11,6 +11,7 @@ from typing import Any, Literal, Mapping, Sequence
 from uuid import uuid4
 
 from model.markov_builder import compile_markov_tables
+from model.markov_reproducibility import MarkovReproducibilityError, validate_analysis_currency
 from model.semi_markov_builder import compile_semi_markov_tables
 
 
@@ -81,8 +82,10 @@ def _validate_methods(methods: Mapping[str, Any]) -> dict[str, Any]:
         value = float(cleaned[key])
         if not math.isfinite(value) or not 0 <= value < 1:
             raise StateTransitionPersistenceError(f"{key} must be a finite proportion in [0, 1).")
-    if not str(cleaned["currency_code"]).strip():
+    currency = str(cleaned["currency_code"]).strip().upper()
+    if not currency:
         raise StateTransitionPersistenceError("Analysis currency code is required.")
+    cleaned["currency_code"] = currency
     return cleaned
 
 
@@ -108,6 +111,13 @@ def _validate_engine(engine: Mapping[str, Any]) -> dict[str, Any]:
     if max_cycles < 1:
         raise StateTransitionPersistenceError("Maximum cycles must be positive.")
     return cleaned
+
+
+def _validate_currency(parameters, methods) -> None:
+    try:
+        validate_analysis_currency(parameters, str(methods["currency_code"]))
+    except MarkovReproducibilityError as exc:
+        raise StateTransitionPersistenceError(str(exc)) from exc
 
 
 def build_state_transition_bundle(
@@ -146,7 +156,7 @@ def build_state_transition_bundle(
         "mortality_table": _rows(mortality_table_rows),
         "mortality_rules": _rows(mortality_rule_rows),
     }
-
+    _validate_currency(structure["parameters"], methods_clean)
     _compile_for_validation(model_type, structure, engine_clean)
 
     bundle: dict[str, Any] = {
@@ -180,27 +190,16 @@ def _compile_for_validation(model_type: str, model: Mapping[str, Any], engine: M
                 "Homogeneous cohort Markov files cannot contain advanced mortality-table rules."
             )
         return compile_markov_tables(
-            model["parameters"],
-            model["states"],
-            model["strategies"],
-            model["initial_distribution"],
-            model["transitions"],
-            model["state_rewards"],
-            model["transition_rewards"],
-            **common,
+            model["parameters"], model["states"], model["strategies"],
+            model["initial_distribution"], model["transitions"], model["state_rewards"],
+            model["transition_rewards"], **common,
         )
     if model_type == "semi_markov":
         return compile_semi_markov_tables(
-            model["parameters"],
-            model["states"],
-            model["strategies"],
-            model["initial_distribution"],
-            model["transitions"],
-            model["state_rewards"],
-            model["transition_rewards"],
-            model.get("mortality_table", []),
-            model.get("mortality_rules", []),
-            **common,
+            model["parameters"], model["states"], model["strategies"],
+            model["initial_distribution"], model["transitions"], model["state_rewards"],
+            model["transition_rewards"], model.get("mortality_table", []),
+            model.get("mortality_rules", []), **common,
         )
     raise StateTransitionPersistenceError(f"Unsupported model_type '{model_type}'.")
 
@@ -233,21 +232,17 @@ def load_state_transition_bundle(data: str | bytes) -> dict[str, Any]:
     if not isinstance(methods, dict) or not isinstance(engine, dict) or not isinstance(model, dict):
         raise StateTransitionPersistenceError("Model file is missing methods, engine or model content.")
     required_model = {
-        "parameters",
-        "states",
-        "strategies",
-        "initial_distribution",
-        "transitions",
-        "state_rewards",
-        "transition_rewards",
+        "parameters", "states", "strategies", "initial_distribution", "transitions",
+        "state_rewards", "transition_rewards",
     }
     missing = required_model - set(model)
     if missing:
         raise StateTransitionPersistenceError(
             "State-transition model is missing structural fields: " + ", ".join(sorted(missing)) + "."
         )
-    _validate_methods(methods)
+    methods_clean = _validate_methods(methods)
     _validate_engine(engine)
+    _validate_currency(model["parameters"], methods_clean)
     _compile_for_validation(str(model_type), model, engine)
     stored_hash = parsed.get("content_hash_sha256")
     if not stored_hash:
@@ -261,12 +256,7 @@ def load_state_transition_bundle(data: str | bytes) -> dict[str, Any]:
 
 
 def compile_loaded_state_transition_bundle(bundle: Mapping[str, Any]):
-    """Recompile a loaded bundle into validated engine objects."""
-    return _compile_for_validation(
-        str(bundle["model_type"]),
-        bundle["model"],
-        bundle["engine"],
-    )
+    return _compile_for_validation(str(bundle["model_type"]), bundle["model"], bundle["engine"])
 
 
 def build_state_transition_audit_record(
@@ -280,7 +270,6 @@ def build_state_transition_audit_record(
     if not analysis_type.strip():
         raise StateTransitionPersistenceError("Audit analysis_type is required.")
     snapshot = _json_safe(deepcopy(dict(bundle)))
-    # Ensure the snapshot is itself a valid, untampered model before recording it.
     load_state_transition_bundle(state_transition_bundle_json(snapshot))
     return {
         "audit_schema_version": STATE_TRANSITION_AUDIT_VERSION,
