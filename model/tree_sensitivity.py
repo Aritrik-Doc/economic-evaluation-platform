@@ -99,23 +99,23 @@ def tornado_tree_inmb(
     parameters: Sequence[Parameter],
     **context,
 ) -> tuple[TornadoResult, ...]:
-    """Run low/high one-way analyses for all parameters with explicit ranges."""
+    """Run low/high one-way analyses for all parameters explicitly enabled for DSA."""
 
     evaluate = _inmb_evaluator(tree, parameters, **context)
     base_inmb = evaluate({})
     rows: list[TornadoResult] = []
     for parameter in parameters:
-        uncertainty = parameter.uncertainty
-        if uncertainty.kind != "range" or uncertainty.lower is None or uncertainty.upper is None:
+        dsa = parameter.dsa
+        if dsa is None or not dsa.enabled or dsa.lower is None or dsa.upper is None:
             continue
-        low_inmb = evaluate({parameter.id: uncertainty.lower})
-        high_inmb = evaluate({parameter.id: uncertainty.upper})
+        low_inmb = evaluate({parameter.id: dsa.lower})
+        high_inmb = evaluate({parameter.id: dsa.upper})
         rows.append(
             TornadoResult(
                 parameter_id=parameter.id,
                 label=parameter.label,
-                low_value=uncertainty.lower,
-                high_value=uncertainty.upper,
+                low_value=dsa.lower,
+                high_value=dsa.upper,
                 low_inmb=low_inmb,
                 high_inmb=high_inmb,
                 base_inmb=base_inmb,
