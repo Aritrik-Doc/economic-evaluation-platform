@@ -2,11 +2,11 @@
 
 An open, auditable health-economic modelling and decision-analysis platform aimed at HEOR, HTA, and eventually payer / market-access workflows.
 
-## Current development milestone: 0.5
+## Current development milestone: 0.6
 
-Version 0.5 adds a **cohort state-transition / Markov modeller** alongside the guided decision-tree modeller. Both model types use the same reference-case layer, parameter provenance, split deterministic/probabilistic uncertainty and common cost-effectiveness decision-analysis engine.
+Version 0.6 extends the v0.5 cohort state-transition modeller with **semi-Markov / tunnel-state memory, model-time-varying transitions, age-dependent mortality, and explicit rate/hazard conversion**.
 
-The Markov implementation deliberately begins with a transparent **closed-cohort, discrete-time, time-homogeneous** model. Semi-Markov/tunnel-state and time-varying transition logic are explicit later extensions rather than hidden assumptions in the first release.
+The v0.5 homogeneous cohort engine remains available and unchanged. Advanced dynamics are initially exposed through a separate workbench so they can be tested before being folded into the main guided Markov builder and persistence layer.
 
 ## Recognised reference cases
 
@@ -24,74 +24,78 @@ Source: https://pmc.ncbi.nlm.nih.gov/articles/PMC10485782/
 
 ## Cohort Markov / state-transition modeller
 
-`pages/2_Cohort_Markov_Builder.py` provides five work areas:
+`pages/2_Cohort_Markov_Builder.py` remains the guided v0.5 modeller for transparent, closed-cohort, discrete-time, time-homogeneous models. It supports cycle length, horizon, discounting, state and transition rewards, cohort traces, fully incremental CEA, DSA, PSA, CE plane and CEAC.
 
-1. **Methods** — cycle length, maximum horizon, fixed-horizon versus cohort-depletion stopping, discounting, state-reward accrual timing and transition-event timing.
-2. **Parameters** — the same guided Base case / DSA / PSA / Evidence-and-assumptions parameter cards used by the decision-tree workflow.
-3. **States & transitions** — health states, absorbing-state designation, strategies, initial cohort distributions, strategy-specific transition rows and a rendered state diagram.
-4. **Rewards** — state occupancy costs/outcomes and transition-event costs/outcomes.
-5. **Analyse** — base-case totals, fully incremental CEA, cohort trace, tornado DSA, Markov PSA, cost-effectiveness plane and CEAC.
+Transition inputs in that page remain explicit **probabilities for the selected model cycle** using direct, complement or residual probability rules. The engine does not reinterpret hazards or rates as probabilities.
 
-### Transition semantics
+## Advanced Markov dynamics
 
-Transition inputs in v0.5 are **probabilities for the selected model cycle length**. The modeller can use:
+`pages/3_Advanced_Markov_Dynamics.py` provides the v0.6 workbench. It separates two clocks:
 
-- `direct` — use probability parameter `p`;
-- `complement` — use `1-p`;
-- `residual` — use `1 - sum(other outgoing probabilities)`.
+- **model time** — time since the simulation began;
+- **state time** — time since cohort mass entered the current state.
 
-Every non-absorbing stochastic row must sum to 1 within numerical tolerance. Absorbing states may omit their explicit self-transition; the engine then supplies probability 1.
+State-time schedules implement semi-Markov / tunnel-state dependence. Internally, cohort occupancy is tracked by `state × tenure`, while economic results continue to use aggregated state occupancy.
 
-The platform does **not** silently treat rates, hazards or hazard ratios as transition probabilities. Explicit rate/intensity-matrix and competing-risk-aware conversion is a later extension.
+### Piecewise schedules
 
-### State and transition rewards
+Dynamic transitions use explicit non-overlapping bands `[start_time, end_time)`. A schedule may be based on model time or state time. Missing coverage is an error rather than an implicit carry-forward assumption.
 
-State rewards may accrue `per_cycle` or `per_year`. Per-year rewards are multiplied by cycle length in years. Typical examples are annual state-management costs and utility weights used to generate QALYs.
+All exits from an origin state must use one coherent representation: probabilities or rates. The engine does not silently mix the two.
 
-Transition-event rewards are applied to expected flow between two states and are intended for one-off events such as progression, hospitalisation or treatment initiation.
+### Hazard and rate conversion
 
-### Within-cycle accrual
+`model/transition_dynamics.py` provides:
 
-State rewards can use start-of-cycle, end-of-cycle or half-cycle/trapezoidal occupancy. Half-cycle accrual is an explicit modelling choice rather than an automatically imposed correction. Transition-event rewards can be timed at the start, midpoint or end of a cycle for discounting.
+- single constant rate → interval probability using `p = 1 - exp(-r*t)`;
+- interval probability → constant rate;
+- probability rescaling under an explicit constant-hazard assumption;
+- joint competing-rate conversion so exit probabilities plus remaining in the origin state sum to 1;
+- full continuous-time generator conversion `P(t) = exp(Q*t)` using uniformization, without a SciPy runtime dependency.
 
-### Time horizon
+The generator conversion allows within-cycle multi-step movement such as A→B→C where implied by the continuous-time process.
 
-The model can run a fixed number of cycles or use **cohort-depletion stopping**, where simulation ends when the remaining cohort in non-absorbing states falls below a declared threshold, subject to a maximum-cycle safety bound.
+### Age-specific mortality
+
+Annual age-specific mortality probabilities are converted to forces of mortality. Cycles that cross birthdays integrate the hazard piecewise across age bands. Optional standardized mortality ratios multiply the **mortality rate**, not the probability.
+
+Automatic background mortality is only combined with **rate-based** disease exits. For probability-based rows, death must be represented explicitly within the probability system because there is no unique safe rule for adding an external competing mortality probability.
+
+### Semi-Markov uncertainty
+
+The advanced engine accepts the same parameter override mechanism as the rest of the platform. Dedicated wrappers are provided for deterministic INMB sensitivity analysis and full-model PSA, so time-varying and state-time-dependent transitions can participate in uncertainty analysis without a separate parameter system.
 
 ## Validation
 
-The Markov engine validates:
+Across the v0.5 and v0.6 state-transition layers, validation includes:
 
 - unique states and strategies;
-- initial state distributions summing to 1;
-- defined state/parameter references;
-- no duplicate origin/destination transitions within a strategy;
-- probability parameters in `[0,1]`;
-- no more than one residual transition per origin state;
-- stochastic transition rows summing to 1;
-- absorbing states cannot be exited;
+- initial distributions summing to 1;
+- valid state and parameter references;
+- stochastic probability rows;
+- coherent rate-based competing exits;
+- absorbing-state behaviour;
+- valid piecewise schedule coverage and non-overlap;
+- explicit distinction between model-time and state-time schedules;
+- age-mortality table coverage;
 - cost/outcome reward parameter types;
-- transition rewards only on structurally defined transitions;
-- cohort mass conservation during simulation;
-- finite valid discount rates.
+- cohort mass conservation;
+- finite discount rates;
+- refusal to combine background mortality heuristically with probability rows.
 
 ## Deterministic and probabilistic uncertainty
 
-DSA and PSA remain independent properties of each parameter. A parameter can participate in both at the same time.
+DSA and PSA remain independent properties of each parameter. A parameter can participate in both simultaneously. Decision-tree, homogeneous Markov and semi-Markov engines all rerun the complete model under parameter overrides rather than applying post-hoc adjustments to totals.
 
-Markov DSA reruns the full cohort model under deterministic parameter overrides and currently exposes a one-way INMB tornado view in the v0.5 page. The engine wrappers also support generic one-way, two-way and threshold analyses.
-
-Markov PSA reruns the complete cohort model for every draw. Scalar Beta, Gamma, Lognormal, Normal and Uniform distributions are supported, plus grouped Dirichlet components for coherent probability vectors. Markov PSA outputs reuse the common cost-effectiveness plane and CEAC calculations.
-
-A model/settings fingerprint prevents an old in-session PSA result from being displayed after the current Markov model has changed.
+Grouped Dirichlet components remain supported for coherent PSA probability vectors. Other declared correlation groups without a configured joint distribution are sampled independently with a methodological warning.
 
 ## Currency guard
 
-v0.5 does not silently convert cost inputs between currencies. Every cost parameter must match the selected analysis currency before the Markov model can run. If the modeller changes the analysis currency, cost values must be explicitly converted and their source/date documented before the parameter currency is changed.
+The platform does not silently convert cost inputs between currencies. Every cost parameter must match the selected analysis currency before the model can run. Currency conversion, source/date and price-year handling remain explicit provenance concepts.
 
 ## Guided decision-tree modeller
 
-`pages/1_Decision_Tree_Builder.py` remains the guided constrained visual decision-tree modeller introduced in v0.4.1. It supports chance events, terminal outcomes, direct/complement branch probabilities, timed rewards, base-case CEA, DSA, PSA, model persistence and audit exports.
+`pages/1_Decision_Tree_Builder.py` remains the guided constrained visual decision-tree modeller. It supports chance events, terminal outcomes, direct/complement branch probabilities, timed rewards, base-case CEA, DSA, PSA, model persistence and audit exports.
 
 ## Economic outcomes
 
@@ -105,24 +109,25 @@ OS and PFS remain clinical/survival endpoints for later survival-based model str
 
 ## Persistence and audit status
 
-Decision-tree save/load/audit remains available. Markov JSON persistence and audit-record export are **not yet claimed as complete in v0.5**; they are the next model-infrastructure sub-step so the Markov model structure can be stored and revalidated with the same rigor as decision trees.
+Decision-tree save/load/audit is available. Markov and advanced semi-Markov persistence/audit parity is intentionally the **next milestone** after the v0.6 dynamics are validated, so saved files can capture schedules, mortality tables, hazard semantics and model-time/state-time choices without introducing a second incompatible format.
 
 ## Key files
 
 - `model/reference_cases.py` — NICE, HTAIn and custom methods profiles
 - `model/schema.py` — provenance and split DSA/PSA uncertainty definitions
-- `model/parameterisation.py` — guided distribution conversions and legacy migration
-- `model/decision_tree.py` — parameter-driven decision-tree engine
-- `model/markov.py` — cohort state-transition engine
-- `model/markov_builder.py` — compiler from editable Markov structures to validated model objects
-- `model/markov_sensitivity.py` — deterministic Markov INMB sensitivity wrappers
-- `model/markov_psa.py` — Markov PSA engine
-- `model/markov_reproducibility.py` — currency and stale-result reproducibility guards
-- `model/psa.py` — shared PSA result structures, CE plane and CEAC calculations
+- `model/decision_tree.py` — decision-tree engine
+- `model/markov.py` — homogeneous cohort state-transition engine
+- `model/markov_builder.py` — homogeneous Markov table compiler
+- `model/markov_sensitivity.py` / `model/markov_psa.py` — homogeneous Markov uncertainty
+- `model/transition_dynamics.py` — hazard/probability conversion, schedules and age mortality
+- `model/semi_markov.py` — state-time/model-time dynamic cohort engine
+- `model/semi_markov_builder.py` — advanced dynamics table compiler
+- `model/semi_markov_sensitivity.py` / `model/semi_markov_psa.py` — advanced-model uncertainty wrappers
 - `pages/1_Decision_Tree_Builder.py` — guided decision-tree modeller
-- `pages/2_Cohort_Markov_Builder.py` — guided cohort Markov modeller
-- `docs/cohort-markov.md` — detailed Markov methodological conventions and limitations
-- `docs/uncertainty-and-audit.md` — uncertainty/correlation/persistence conventions
+- `pages/2_Cohort_Markov_Builder.py` — guided homogeneous cohort Markov modeller
+- `pages/3_Advanced_Markov_Dynamics.py` — v0.6 advanced dynamics workbench
+- `docs/cohort-markov.md` — homogeneous Markov conventions
+- `docs/advanced-markov-dynamics.md` — semi-Markov, time dependence, mortality and hazard conversion
 
 ## Run locally
 
@@ -133,7 +138,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then open either the **Decision Tree Builder** or **Cohort Markov / State-Transition Builder** page.
+Then open the Decision Tree Builder, Cohort Markov Builder, or Advanced Markov Dynamics page.
 
 ## Run tests
 
@@ -141,12 +146,6 @@ Then open either the **Decision Tree Builder** or **Cohort Markov / State-Transi
 pytest -q
 ```
 
-## Next modelling extensions
+## Next milestone
 
-The main state-transition extensions after the first v0.5 UI test are:
-
-1. Markov model save/load/audit parity with the decision-tree workflow.
-2. Tunnel-state / semi-Markov support for time-in-state dependence.
-3. Time-varying transition matrices and age/time-dependent mortality.
-4. Explicit rate/intensity-matrix and competing-risk-aware conversion.
-5. Scenario management and richer Markov validation/reporting.
+After v0.6 dynamics are tested in the UI, the next milestone is **Markov/semi-Markov save, load, export and audit parity** with the decision-tree workflow, including versioned JSON schemas, model hashes, run fingerprints and migration handling for v0.5 homogeneous models.
