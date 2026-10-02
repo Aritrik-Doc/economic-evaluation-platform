@@ -2,65 +2,122 @@
 
 An open, auditable health-economic modelling and decision-analysis platform aimed at HEOR, HTA, and eventually payer / market-access workflows.
 
-## Current version: 0.2
+## Current version: 0.3
 
-Version 0.2 provides a deterministic multi-strategy cost-effectiveness decision-analysis layer. It is intentionally model-agnostic: for now users enter expected per-patient cost and outcome totals directly; later decision-tree, Markov, and survival models will calculate those totals and pass them into the same decision-analysis engine.
+Version 0.3 adds the **methods and model-schema layer** underneath the existing multi-strategy decision-analysis engine.
 
-### Supported primary economic outcomes
+The platform now distinguishes between recognised HTA reference cases, custom methods profiles, model structure, parameters, evidence provenance, assumptions, uncertainty, clinical endpoints, economic outcomes, and sensitivity-analysis specifications.
 
-All current economic outcome measures are oriented so that **more is better**:
+## Recognised reference cases
+
+### NICE technology appraisal
+
+The current profile uses current NICE PMG36 methods, including:
+
+- QALYs as the reference-case economic outcome
+- NHS and Personal Social Services cost perspective
+- 3.5% annual discounting for both costs and health outcomes
+- a horizon long enough to reflect all important differences in costs and outcomes
+- current standard technology-appraisal threshold range of **£25,000–£35,000 per QALY gained**
+
+Source: https://www.nice.org.uk/process/pmg36/chapter/economic-evaluation-2/
+
+### HTAIn / Indian Reference Case (2023)
+
+The platform treats the 2023 Indian Reference Case as the governing economic-evaluation reference case:
+
+- QALYs preferred
+- DALYs supported in appropriate circumstances and represented as **DALYs averted**
+- life-years gained retained as a supplementary measure
+- abridged societal base-case perspective
+- separate healthcare-payer results should also be reportable
+- 3% annual discounting for costs and outcomes, with 0–5% explored in sensitivity analysis
+- current practice as comparator; multiple comparators possible
+- horizon long enough to capture all significant costs and consequences
+- no single monetary decision threshold hard-coded into the reference case
+
+Source: https://pmc.ncbi.nlm.nih.gov/articles/PMC10485782/
+
+## Custom methods profile
+
+A `CUSTOM` profile is included for jurisdictions or decision contexts not yet represented in the recognised registry. Users explicitly specify:
+
+- primary outcome
+- perspective
+- time horizon
+- cost discount rate
+- outcome discount rate
+- analysis currency
+- decision threshold when one is required
+
+The registry is deliberately extensible so recognised systems such as CADTH, PBAC, ZIN and others can be added later without changing the analytical engine.
+
+## Supported economic outcomes
+
+All decision-analysis benefit measures are oriented so that **higher = more health benefit**:
 
 - QALYs gained
 - life-years gained
 - DALYs averted
 
-OS and PFS are planned as clinical/model endpoints for survival-based models, rather than being treated as interchangeable primary economic outcome measures.
+OS and PFS are represented as clinical/survival endpoints for model structures rather than as interchangeable economic outcome measures.
 
-### Current decision-analysis outputs
+## Mandatory provenance
 
-- total cost and outcome by strategy
-- net monetary benefit (NMB)
-- preferred strategy by NMB at the selected threshold
+Every model parameter must explicitly carry:
+
+- evidence source
+- assumption statement and rationale
+- uncertainty specification and rationale
+
+Cost parameters additionally require:
+
+- currency
+- price year
+- cost bearer(s)
+- dated market-FX conversion provenance when conversion is used
+
+This supports a **computational perspective**: costs can be automatically included or excluded according to who bears them and which reference case is selected.
+
+## Sensitivity analysis
+
+Version 0.3 defines first-class specifications and helpers for:
+
+- one-way deterministic sensitivity analysis
+- **two-way sensitivity analysis**
+- **threshold analysis**
+- scenario analysis
+- probabilistic sensitivity analysis
+
+Threshold analysis identifies parameter switching values for metrics such as incremental net monetary benefit. Two-way analysis evaluates the full grid formed by two parameter ranges.
+
+## Decision-analysis engine
+
+The existing deterministic engine continues to support:
+
+- multiple mutually exclusive strategies
+- net monetary benefit
 - strong dominance
 - extended dominance
 - efficient cost-effectiveness frontier
-- sequential incremental costs and effects
 - sequential ICERs
-
-The interface explains dominance in plain language so users do not have to infer meaning from a negative ICER.
+- plain-language interpretation
 
 ## Currency approach
 
-Version 0.2 lets the user choose a single analysis currency from a catalog of major currencies.
+The platform uses **market currency conversion**, not purchasing-power-parity/international-dollar conversion.
 
-All costs entered in v0.2 must already be expressed in that analysis currency. Daily **market exchange-rate conversion** will be added when the parameter/model layer allows individual cost inputs to carry a source currency and exchange-rate date. The model should then freeze the rate, source, and date used for reproducibility rather than silently updating old analyses.
+Version 0.3 introduces the schema required to preserve source currency, target currency, exchange rate, exchange-rate date, exchange-rate source and original cost price year. Price-year adjustment remains conceptually separate from FX conversion.
 
-PPP / international-dollar conversion is not part of the current design.
+## Key v0.3 files
 
-## Definitions
-
-For intervention `1` versus comparator `0`:
-
-- `ΔC = C1 - C0`
-- `ΔE = E1 - E0`
-- `ICER = ΔC / ΔE`, where meaningful
-- `NMB = λE - C`
-- `INMB = NMB1 - NMB0 = λΔE - ΔC`
-
-For three or more mutually exclusive strategies, the engine performs fully incremental analysis rather than presenting every pairwise ICER.
-
-## Methodological behaviour
-
-The multi-strategy engine:
-
-1. checks strategy names and inputs;
-2. identifies strongly dominated strategies;
-3. orders remaining strategies by increasing health outcome;
-4. removes strategies subject to extended dominance;
-5. recalculates the final efficient frontier;
-6. reports sequential ICERs only between adjacent strategies on that frontier.
-
-Exact duplicate strategies (identical cost and outcome) are rejected in v0.2 because they are economically indistinguishable and do not define a unique incremental frontier.
+- `model/reference_cases.py` — recognised NICE/HTAIn profiles and custom profile support
+- `model/schema.py` — auditable model, parameter, source, uncertainty and structure definitions
+- `model/sensitivity.py` — one-way, two-way, threshold, scenario and PSA specifications/helpers
+- `docs/methods.md` — methodology and source documentation
+- `tests/test_reference_cases.py`
+- `tests/test_schema.py`
+- `tests/test_sensitivity.py`
 
 ## Run locally
 
@@ -77,29 +134,6 @@ streamlit run app.py
 pytest -q
 ```
 
-## Architecture
+## Next milestone
 
-```text
-Streamlit UI
-    |
-    v
-Decision-analysis engine
-    |
-    +-- outcomes
-    +-- dominance
-    +-- incremental frontier
-    +-- ICER / NMB
-    |
-    v
-Future model engines
-    +-- decision tree
-    +-- cohort Markov
-    +-- partitioned survival
-    +-- microsimulation
-```
-
-The core economic code is kept independent of Streamlit so it can later sit behind a different web frontend or API without rewriting the analytical logic.
-
-## Planned next milestone
-
-Version 0.3: define the generic model and parameter schema — including strategies, model type, health states, transitions, costs, utilities/outcomes, sources, uncertainty, currencies, and audit metadata — before implementing the first model-building engine.
+Use the v0.3 schema to build the first **parameter-driven model engine**, so expected costs and health outcomes are calculated from model structure and parameters rather than entered directly. The specific first engine (decision tree or cohort state-transition model) should be agreed methodologically before implementation.
