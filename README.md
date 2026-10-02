@@ -2,11 +2,11 @@
 
 An open, auditable health-economic modelling and decision-analysis platform aimed at HEOR, HTA, and eventually payer / market-access workflows.
 
-## Current version: 0.3
+## Current development milestone: 0.4
 
-Version 0.3 adds the **methods and model-schema layer** underneath the existing multi-strategy decision-analysis engine.
+Version 0.4 introduces the first **parameter-driven model engine**: a deterministic decision tree. The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
 
-The platform now distinguishes between recognised HTA reference cases, custom methods profiles, model structure, parameters, evidence provenance, assumptions, uncertainty, clinical endpoints, economic outcomes, and sensitivity-analysis specifications.
+The decision-tree engine calculates expected costs and health outcomes from explicit model structure and linked parameters rather than requiring strategy totals to be entered directly.
 
 ## Recognised reference cases
 
@@ -79,9 +79,37 @@ Cost parameters additionally require:
 
 This supports a **computational perspective**: costs can be automatically included or excluded according to who bears them and which reference case is selected.
 
+## Decision-tree engine
+
+The v0.4 decision-tree engine supports:
+
+- multiple mutually exclusive strategies
+- a separate root for each strategy
+- chance nodes with parameter-linked branch probabilities
+- terminal nodes
+- costs and health outcomes accrued at chance or terminal nodes
+- shared downstream subtrees
+- recursive expected-value calculation
+- parameter overrides for later DSA, two-way SA and threshold analysis
+- cost inclusion/exclusion by cost bearer so perspective affects calculations
+- structural validation before a model runs
+
+Validation currently checks:
+
+- at least two strategies
+- globally unique node ids
+- one root per strategy
+- valid child-node references
+- valid parameter references
+- probabilities constrained to 0–1
+- outgoing chance probabilities summing to 1 within tolerance
+- no cycles
+- cost rewards linked only to cost parameters
+- outcome rewards not linked to cost parameters
+
 ## Sensitivity analysis
 
-Version 0.3 defines first-class specifications and helpers for:
+The methods layer defines first-class specifications and helpers for:
 
 - one-way deterministic sensitivity analysis
 - **two-way sensitivity analysis**
@@ -89,11 +117,11 @@ Version 0.3 defines first-class specifications and helpers for:
 - scenario analysis
 - probabilistic sensitivity analysis
 
-Threshold analysis identifies parameter switching values for metrics such as incremental net monetary benefit. Two-way analysis evaluates the full grid formed by two parameter ranges.
+The decision-tree runner accepts parameter overrides without mutating the base parameter set, allowing the same engine to be called by these sensitivity-analysis workflows.
 
 ## Decision-analysis engine
 
-The existing deterministic engine continues to support:
+Model-generated strategy totals feed into the existing decision-analysis layer, which supports:
 
 - multiple mutually exclusive strategies
 - net monetary benefit
@@ -107,17 +135,16 @@ The existing deterministic engine continues to support:
 
 The platform uses **market currency conversion**, not purchasing-power-parity/international-dollar conversion.
 
-Version 0.3 introduces the schema required to preserve source currency, target currency, exchange rate, exchange-rate date, exchange-rate source and original cost price year. Price-year adjustment remains conceptually separate from FX conversion.
+The schema preserves source currency, target currency, exchange rate, exchange-rate date, exchange-rate source and original cost price year. Price-year adjustment remains conceptually separate from FX conversion.
 
-## Key v0.3 files
+## Key files
 
 - `model/reference_cases.py` — recognised NICE/HTAIn profiles and custom profile support
 - `model/schema.py` — auditable model, parameter, source, uncertainty and structure definitions
 - `model/sensitivity.py` — one-way, two-way, threshold, scenario and PSA specifications/helpers
+- `model/decision_tree.py` — deterministic parameter-driven decision-tree engine
 - `docs/methods.md` — methodology and source documentation
-- `tests/test_reference_cases.py`
-- `tests/test_schema.py`
-- `tests/test_sensitivity.py`
+- `tests/test_decision_tree.py` — decision-tree expected-value and validation tests
 
 ## Run locally
 
@@ -134,6 +161,9 @@ streamlit run app.py
 pytest -q
 ```
 
-## Next milestone
+## Next milestones
 
-Use the v0.3 schema to build the first **parameter-driven model engine**, so expected costs and health outcomes are calculated from model structure and parameters rather than entered directly. The specific first engine (decision tree or cohort state-transition model) should be agreed methodologically before implementation.
+1. Build a user-facing decision-tree model builder on top of the v0.4 engine, including parameter entry, provenance capture and visual validation.
+2. Connect deterministic, two-way and threshold sensitivity analyses directly to model runs.
+3. Add PSA sampling over uncertain tree parameters.
+4. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective and uncertainty framework.
