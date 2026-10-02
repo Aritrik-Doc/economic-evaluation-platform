@@ -4,7 +4,7 @@ An open, auditable health-economic modelling and decision-analysis platform aime
 
 ## Current development milestone: 0.4
 
-Version 0.4 provides the first **parameter-driven model engine**: a decision tree with a **hybrid structured/visual builder**, automatic discounting, deterministic sensitivity analysis and probabilistic sensitivity analysis.
+Version 0.4 provides the first **parameter-driven model engine**: a decision tree with a **hybrid structured/visual builder**, automatic discounting, deterministic sensitivity analysis, probabilistic sensitivity analysis, model persistence and audit exports.
 
 The v0.3 methods/reference-case layer remains the methodological foundation beneath it.
 
@@ -64,7 +64,7 @@ OS and PFS remain clinical/survival endpoints for later survival-based model str
 
 ## Deterministic sensitivity analysis
 
-The builder now provides:
+The builder provides:
 
 - one-way sensitivity analysis
 - **tornado diagram** using explicit low/high parameter ranges
@@ -82,7 +82,8 @@ The platform deliberately does **not** choose distributions silently. Instead, i
 
 Current advisory starting points include:
 
-- probabilities/proportions → Beta
+- probabilities/proportions → Beta for a single bounded probability
+- a vector of mutually exclusive probabilities constrained to sum to 1 → Dirichlet
 - non-negative costs → Gamma
 - hazard ratios / risk ratios / odds ratios → Lognormal
 - utilities genuinely bounded 0–1 → Beta, with a warning that utility values may be negative in some systems
@@ -90,19 +91,26 @@ Current advisory starting points include:
 
 Uniform is available as a user-selected option but is not automatically inferred from a low/high range.
 
-Supported scalar PSA distributions are:
+Supported PSA distributions are:
 
 - Beta (`alpha`, `beta`)
 - Gamma (`shape`, `scale`, or equivalent alpha/rate parameterisation)
 - Lognormal (`meanlog`, `sdlog`)
 - Normal (`mean`, `sd`)
 - Uniform (`low`, `high`)
+- grouped Dirichlet (one positive `alpha` per component within a shared `correlation_group`)
 
 PSA sampling is reproducible through an explicit random seed. Only parameters explicitly marked with distribution uncertainty are sampled.
 
-### Correlation safeguard
+### Correlation behavior
 
-Parameters can carry a `correlation_group`. If more than one probabilistic parameter declares the same group, the current engine stops rather than silently sampling them independently. Joint correlated sampling is a planned extension.
+Parameters can carry a `correlation_group`.
+
+For probability vectors configured as grouped Dirichlet components, the engine performs one joint Dirichlet draw per iteration, so the simulated probabilities remain non-negative and sum to 1.
+
+For other declared correlation groups where no covariance or joint sampling structure has yet been provided, PSA is allowed to run but those parameters are sampled independently. The platform displays a prominent methodological warning and carries that warning into the exported audit record. This is intended to support exploratory analysis without pretending that the correlation has been handled correctly.
+
+If independent probability draws make the tree structurally invalid, the run still stops and recommends using a coherent joint probability model such as Dirichlet.
 
 ### Probabilistic outputs
 
@@ -111,8 +119,26 @@ The builder provides:
 - **cost-effectiveness plane** for a selected intervention/comparator pair
 - **cost-effectiveness acceptability curve (CEAC)** across all strategies
 - pairwise probability of cost effectiveness at the chosen threshold
+- exportable simulation-level PSA draws
 
 The PSA engine reruns the complete model for every draw, including perspective filtering and discounting.
+
+## Save / load / export and audit trail
+
+Decision-tree models can be saved as versioned, human-readable JSON and loaded back into the builder.
+
+A saved model includes methods settings, perspective, time horizon, discounting, threshold, all parameters and provenance, distributions, strategies, nodes and branches, plus a SHA-256 content hash. The file is structurally revalidated on load and a hash mismatch is treated as possible editing or corruption.
+
+The builder can export:
+
+- complete model JSON
+- deterministic results CSV
+- latest PSA simulation-level CSV
+- audit-trail JSON
+
+Audit records are explicit user-created run records. Each contains a unique run id, UTC timestamp, platform version, model hash, analysis type, run settings, results summary, warnings and the complete model snapshot used for that run.
+
+See `docs/uncertainty-and-audit.md` for the detailed conventions.
 
 ## Mandatory provenance
 
@@ -136,9 +162,11 @@ The platform uses **market currency conversion**, not PPP/international-dollar c
 - `model/tree_builder.py` — compiler from editable UI tables to model objects
 - `model/tree_sensitivity.py` — deterministic INMB sensitivity helpers and tornado summaries
 - `model/uncertainty_defaults.py` — advisory PSA distribution suggestions
-- `model/psa.py` — PSA simulation, CE-plane data and CEAC calculations
-- `pages/1_Decision_Tree_Builder.py` — hybrid builder and visual outputs
-- `docs/methods.md` — methodological specification
+- `model/psa.py` — PSA simulation, grouped Dirichlet sampling, CE-plane data and CEAC calculations
+- `model/persistence.py` — versioned model files, hashes, CSV helpers and audit records
+- `pages/1_Decision_Tree_Builder.py` — hybrid builder, visual outputs and file/audit UI
+- `docs/methods.md` — core methodological specification
+- `docs/uncertainty-and-audit.md` — PSA/correlation/persistence/audit conventions
 
 ## Run locally
 
@@ -159,7 +187,7 @@ pytest -q
 
 ## Next milestones
 
-1. Add **save/load/export** for complete model definitions, model runs and audit metadata.
-2. Add joint correlated PSA sampling and additional distribution structures where methodologically justified.
-3. Add scenario-management workflows and richer reporting/export.
-4. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective, uncertainty and visualisation framework.
+1. Add explicit covariance-matrix / multivariate-normal joint sampling and other joint distributions where methodologically justified.
+2. Add scenario-management workflows and richer reporting/export.
+3. Improve audit/version comparison, including model-difference summaries between saved versions.
+4. Build the **cohort state-transition / Markov engine** using the same parameter, provenance, reference-case, perspective, uncertainty, persistence and visualisation framework.
