@@ -1,16 +1,11 @@
 """Semi-Markov and time-varying cohort state-transition engine.
 
-Unlike the v0.5 homogeneous cohort engine, this runner tracks how long cohort
-mass has spent in each state. Transition schedules can depend on either model
-(simulation) time or time since entry to the current state. This implements
-state-time memory without forcing users to manually create dozens of tunnel
-states.
-
-Outgoing transitions from a state must use one coherent representation:
-probabilities or cause-specific rates. Rate-based exits are converted jointly
-as competing risks. Optional age-specific background mortality joins those
-cause-specific rates; it is deliberately not combined heuristically with
-probability-based exits.
+The runner tracks both model time and time since entry to each health state.
+Outgoing transitions may be entered as interval probabilities, continuous rates,
+or probabilities that the modeller explicitly elects to convert to constant
+cause-specific rates. The explicit conversion mode is required when a supplied
+probability is to compete jointly with automatic age-specific background
+mortality; the engine never makes that constant-hazard assumption silently.
 """
 
 from __future__ import annotations
@@ -39,7 +34,7 @@ from model.transition_dynamics import (
 )
 
 
-TransitionInput = Literal["probability", "rate"]
+TransitionInput = Literal["probability", "rate", "probability_to_rate"]
 ProbabilityMode = Literal["direct", "complement"]
 
 
@@ -54,18 +49,34 @@ class DynamicTransition:
     schedule: PiecewiseParameterSchedule
     input_type: TransitionInput = "probability"
     probability_mode: ProbabilityMode = "direct"
+    source_interval_years: float | None = None
 
     def __post_init__(self) -> None:
         if not self.origin_state.strip() or not self.destination_state.strip():
             raise ValueError("Dynamic transition origin and destination are mandatory.")
         if self.origin_state == self.destination_state:
             raise ValueError("Dynamic transitions describe exits only; staying is derived automatically.")
-        if self.input_type not in {"probability", "rate"}:
-            raise ValueError("Dynamic transition input_type must be probability or rate.")
+        if self.input_type not in {"probability", "rate", "probability_to_rate"}:
+            raise ValueError(
+                "Dynamic transition input_type must be probability, rate or probability_to_rate."
+            )
         if self.probability_mode not in {"direct", "complement"}:
             raise ValueError("Probability mode must be direct or complement.")
-        if self.input_type == "rate" and self.probability_mode != "direct":
-            raise ValueError("Complement mode is not meaningful for rate inputs.")
+        if self.input_type in {"rate", "probability_to_rate"} and self.probability_mode != "direct":
+            raise ValueError("Complement mode is not meaningful for rate-based transition inputs.")
+        if self.input_type == "probability_to_rate":
+            if (
+                self.source_interval_years is None
+                or not isfinite(self.source_interval_years)
+                or self.source_interval_years <= 0
+            ):
+                raise ValueError(
+                    "Probability-to-rate transitions require a positive source_interval_years."
+                )
+        elif self.source_interval_years is not None:
+            raise ValueError(
+                "source_interval_years is only used when input_type is probability_to_rate."
+            )
 
 
 @dataclass(frozen=True)
@@ -133,6 +144,8 @@ class SemiMarkovDefinition:
             raise ValueError("Termination mode must be fixed_cycles or cohort_depletion.")
         if not isfinite(self.depletion_threshold) or not 0 <= self.depletion_threshold < 1:
             raise ValueError("Depletion threshold must lie in [0, 1).")
+        if not isfinite(self.probability_tolerance) or self.probability_tolerance <= 0:
+            raise ValueError("Probability tolerance must be positive and finite.")
 
 
 @dataclass(frozen=True)
@@ -186,16 +199,30 @@ class _Resolver:
         parameter = self.parameter(parameter_id)
         return float(self.overrides.get(parameter_id, parameter.value))
 
+    def probability(self, parameter_id: str) -> float:
+        parameter = self.parameter(parameter_id)
+        if parameter.category == "cost":
+            raise SemiMarkovValidationError("Probability inputs cannot reference cost parameters.")
+        value = self.value(parameter_id)
+        if not 0 <= value <= 1:
+            raise SemiMarkovValidationError(
+                f"Probability parameter '{parameter_id}' must lie in [0, 1]."
+            )
+        return value
+
     def transition_value(self, parameter_id: str, input_type: TransitionInput) -> float:
         parameter = self.parameter(parameter_id)
         if parameter.category == "cost":
             raise SemiMarkovValidationError("Transition inputs cannot reference cost parameters.")
         value = self.value(parameter_id)
-        if input_type == "probability" and not 0 <= value <= 1:
-            raise SemiMarkovValidationError(
-                f"Transition probability '{parameter_id}' must lie in [0, 1]."
-            )
-        if input_type == "rate" and value < 0:
+        if input_type in {"probability", "probability_to_rate"}:
+            upper_ok = value < 1 if input_type == "probability_to_rate" else value <= 1
+            if value < 0 or not upper_ok:
+                interval = "[0, 1)" if input_type == "probability_to_rate" else "[0, 1]"
+                raise SemiMarkovValidationError(
+                    f"Transition probability '{parameter_id}' must lie in {interval}."
+                )
+        elif value < 0:
             raise SemiMarkovValidationError(
                 f"Transition rate '{parameter_id}' must be non-negative."
             )
@@ -238,11 +265,21 @@ def _reward_time(model: SemiMarkovDefinition, cycle: int, *, transition: bool) -
     return start + 0.5 * model.cycle_length_years
 
 
+def _allocation_value(allocation: InitialStateAllocation, resolver: _Resolver) -> float:
+    if allocation.proportion_mode == "fixed":
+        assert allocation.proportion is not None
+        return float(allocation.proportion)
+    assert allocation.proportion_parameter_id is not None
+    base = resolver.probability(allocation.proportion_parameter_id)
+    return base if allocation.proportion_mode == "direct" else 1.0 - base
+
+
 def _initial_tenure_matrix(
     strategy: SemiMarkovStrategyDefinition,
     state_index: Mapping[str, int],
     max_cycles: int,
     tolerance: float,
+    resolver: _Resolver,
 ) -> np.ndarray:
     matrix = np.zeros((len(state_index), max_cycles + 1), dtype=float)
     seen: set[str] = set()
@@ -254,11 +291,12 @@ def _initial_tenure_matrix(
         if allocation.state_id in seen:
             raise SemiMarkovValidationError("Initial distribution contains duplicate state allocation.")
         seen.add(allocation.state_id)
-        matrix[state_index[allocation.state_id], 0] = allocation.proportion
+        matrix[state_index[allocation.state_id], 0] = _allocation_value(allocation, resolver)
     total = float(matrix.sum())
     if not isclose(total, 1.0, rel_tol=0.0, abs_tol=tolerance):
         raise SemiMarkovValidationError(
-            f"Initial distribution for strategy '{strategy.strategy_id}' sums to {total:.12g}, not 1."
+            f"Initial distribution for strategy '{strategy.strategy_id}' sums to {total:.12g}, not 1. "
+            "Parameter-linked allocations should use coherent direct/complement values or a jointly constrained probability set."
         )
     return matrix
 
@@ -275,6 +313,18 @@ def _transition_groups(strategy: SemiMarkovStrategyDefinition) -> dict[str, tupl
         pairs.add(pair)
         grouped.setdefault(transition.origin_state, []).append(transition)
     return {origin: tuple(values) for origin, values in grouped.items()}
+
+
+def _transition_representation(transitions: Sequence[DynamicTransition]) -> str:
+    types = {item.input_type for item in transitions}
+    if types == {"probability"}:
+        return "probability"
+    if types.issubset({"rate", "probability_to_rate"}):
+        return "rate_based"
+    raise SemiMarkovValidationError(
+        "All exits from an origin state must use either interval probabilities or a coherent rate-based representation. "
+        "Continuous rates and explicitly converted probability-to-rate exits may be combined; plain probabilities may not be mixed with them."
+    )
 
 
 def _validate_strategy(
@@ -296,11 +346,7 @@ def _validate_strategy(
                 raise SemiMarkovValidationError(
                     f"Undefined transition destination '{transition.destination_state}'."
                 )
-        input_types = {transition.input_type for transition in transitions}
-        if len(input_types) != 1:
-            raise SemiMarkovValidationError(
-                f"All exits from state '{origin}' must use probabilities or rates consistently."
-            )
+        _transition_representation(transitions)
 
     for state in model.states:
         if not state.absorbing and state.id not in groups:
@@ -320,10 +366,10 @@ def _validate_strategy(
                     f"Background mortality references undefined state '{state_id}'."
                 )
             transitions = groups.get(state_id, ())
-            if transitions and any(item.input_type != "rate" for item in transitions):
+            if transitions and _transition_representation(transitions) != "rate_based":
                 raise SemiMarkovValidationError(
                     "Background mortality can only be combined automatically with rate-based exits. "
-                    "For probability-based rows, represent mortality explicitly in the probability schedule."
+                    "For an interval probability, explicitly choose probability_to_rate and document the constant cause-specific hazard assumption, or represent mortality explicitly in a probability row."
                 )
         if mortality.smr_parameter_id is not None:
             smr = resolver.value(mortality.smr_parameter_id)
@@ -374,7 +420,7 @@ def validate_semi_markov(
     state_index = {state_id: index for index, state_id in enumerate(state_ids)}
     for strategy in model.strategies:
         _initial_tenure_matrix(
-            strategy, state_index, model.max_cycles, model.probability_tolerance
+            strategy, state_index, model.max_cycles, model.probability_tolerance, resolver
         )
         _validate_strategy(model, strategy, resolver)
 
@@ -389,10 +435,10 @@ def _row_probabilities(
     state_time: float,
     resolver: _Resolver,
 ) -> dict[str, float]:
-    input_type = transitions[0].input_type
+    representation = _transition_representation(transitions)
     destinations: dict[str, float] = {}
 
-    if input_type == "probability":
+    if representation == "probability":
         total = 0.0
         for transition in transitions:
             parameter_id = transition.schedule.parameter_id(
@@ -416,7 +462,16 @@ def _row_probabilities(
             model_time=model_time,
             state_time=state_time,
         )
-        rates[transition.destination_state] = resolver.transition_value(parameter_id, "rate")
+        raw = resolver.transition_value(parameter_id, transition.input_type)
+        if transition.input_type == "rate":
+            rate = raw
+        else:
+            assert transition.source_interval_years is not None
+            try:
+                rate = probability_to_rate(raw, transition.source_interval_years)
+            except ValueError as exc:
+                raise SemiMarkovValidationError(str(exc)) from exc
+        rates[transition.destination_state] = rate
 
     mortality = strategy.background_mortality
     if mortality is not None and origin_state in mortality.applicable_states:
@@ -476,7 +531,7 @@ def run_semi_markov(
     for strategy in model.strategies:
         groups = _transition_groups(strategy)
         tenure = _initial_tenure_matrix(
-            strategy, state_index, model.max_cycles, model.probability_tolerance
+            strategy, state_index, model.max_cycles, model.probability_tolerance, resolver
         )
         aggregated = tenure.sum(axis=1)
         trace: list[tuple[float, ...]] = [tuple(float(value) for value in aggregated)]

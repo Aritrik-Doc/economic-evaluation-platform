@@ -1,8 +1,16 @@
-"""Compiler from editable UI tables to semi-Markov model definitions."""
+"""Compiler from editable UI tables to semi-Markov model definitions.
+
+The compiler is the compatibility boundary between editable/imported row data
+and the stricter advanced state-transition engine. It accepts legacy aliases
+where they are unambiguous, removes only residual self-stay rows (because the
+semi-Markov engine derives staying internally), and never silently converts an
+interval probability to a rate.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isnan
 from typing import Any, Mapping, Sequence
 
 from model.markov import InitialStateAllocation, MarkovState, StateReward, TransitionReward
@@ -27,6 +35,14 @@ class CompiledSemiMarkovModel:
     parameters: tuple[Parameter, ...]
 
 
+def _blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and isnan(value):
+        return True
+    return not str(value).strip()
+
+
 def _text(value: Any, field: str) -> str:
     text = "" if value is None else str(value).strip()
     if not text:
@@ -34,7 +50,13 @@ def _text(value: Any, field: str) -> str:
     return text
 
 
+def _optional_text(value: Any) -> str | None:
+    return None if _blank(value) else str(value).strip()
+
+
 def _float(value: Any, field: str) -> float:
+    if _blank(value):
+        raise BuilderValidationError(f"{field} is required.")
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -42,7 +64,7 @@ def _float(value: Any, field: str) -> float:
 
 
 def _optional_float(value: Any) -> float | None:
-    if value is None or str(value).strip() == "":
+    if _blank(value):
         return None
     try:
         return float(value)
@@ -53,7 +75,7 @@ def _optional_float(value: Any) -> float | None:
 def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def compile_states(rows: Sequence[Mapping[str, Any]]) -> tuple[MarkovState, ...]:
@@ -61,13 +83,16 @@ def compile_states(rows: Sequence[Mapping[str, Any]]) -> tuple[MarkovState, ...]
     for index, row in enumerate(rows, start=1):
         if not str(row.get("state_id") or "").strip():
             continue
-        states.append(
-            MarkovState(
-                id=_text(row.get("state_id"), f"State row {index}: state_id"),
-                label=_text(row.get("state_name"), f"State row {index}: state_name"),
-                absorbing=_bool(row.get("absorbing")),
+        try:
+            states.append(
+                MarkovState(
+                    id=_text(row.get("state_id"), f"State row {index}: state_id"),
+                    label=_text(row.get("state_name"), f"State row {index}: state_name"),
+                    absorbing=_bool(row.get("absorbing")),
+                )
             )
-        )
+        except ValueError as exc:
+            raise BuilderValidationError(str(exc)) from exc
     if len(states) < 2:
         raise BuilderValidationError("At least two health states are required.")
     ids = [state.id for state in states]
@@ -79,7 +104,7 @@ def compile_states(rows: Sequence[Mapping[str, Any]]) -> tuple[MarkovState, ...]
 def compile_mortality_table(rows: Sequence[Mapping[str, Any]]) -> AgeSpecificMortalityTable | None:
     values: list[tuple[int, float]] = []
     for index, row in enumerate(rows, start=1):
-        if row.get("age") is None or str(row.get("age")).strip() == "":
+        if _blank(row.get("age")):
             continue
         age = int(_float(row.get("age"), f"Mortality row {index}: age"))
         probability = _float(
@@ -95,14 +120,71 @@ def compile_mortality_table(rows: Sequence[Mapping[str, Any]]) -> AgeSpecificMor
         raise BuilderValidationError(str(exc)) from exc
 
 
+def normalize_semi_markov_transition_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize compatible standard/legacy transition rows for the advanced engine.
+
+    Standard cohort models often store an explicit residual self-transition.
+    Advanced semi-Markov models derive staying automatically, so that specific
+    row is safely omitted. A residual transition to another state is ambiguous
+    and is therefore rejected rather than reinterpreted.
+    """
+
+    normalized: list[dict[str, Any]] = []
+    for index, original in enumerate(rows, start=1):
+        row = dict(original)
+        if _blank(row.get("strategy_id")):
+            continue
+        origin = _text(row.get("origin_state"), f"Transition row {index}: origin_state")
+        destination = _text(
+            row.get("destination_state"), f"Transition row {index}: destination_state"
+        )
+        probability_mode = (_optional_text(row.get("probability_mode")) or "direct").lower()
+        if probability_mode == "residual":
+            if origin == destination:
+                continue
+            raise BuilderValidationError(
+                "Advanced Markov derives the probability of remaining in an origin state automatically. "
+                "A residual transition to a different state cannot be translated safely; replace it with an explicit probability/rate definition."
+            )
+
+        input_type = (_optional_text(row.get("input_type")) or "probability").lower()
+        parameter_id = (
+            _optional_text(row.get("parameter_id"))
+            or _optional_text(row.get("probability_parameter_id"))
+        )
+        time_basis = (_optional_text(row.get("time_basis")) or "model_time").lower()
+        start_time = 0.0 if _blank(row.get("start_time")) else _float(
+            row.get("start_time"), f"Transition row {index}: start_time"
+        )
+        source_interval = _optional_float(
+            row.get("source_interval_years", row.get("probability_interval_years"))
+        )
+        normalized.append(
+            {
+                **row,
+                "strategy_id": _text(row.get("strategy_id"), f"Transition row {index}: strategy_id"),
+                "origin_state": origin,
+                "destination_state": destination,
+                "input_type": input_type,
+                "probability_mode": probability_mode,
+                "time_basis": time_basis,
+                "start_time": start_time,
+                "end_time": _optional_float(row.get("end_time")),
+                "parameter_id": parameter_id,
+                "source_interval_years": source_interval,
+            }
+        )
+    return normalized
+
+
 def _compile_transition_groups(rows: Sequence[Mapping[str, Any]]):
     groups: dict[
         tuple[str, str, str, str, str, str],
-        list[ParameterBand],
+        dict[str, Any],
     ] = {}
-    for index, row in enumerate(rows, start=1):
-        if not str(row.get("strategy_id") or "").strip():
-            continue
+    for index, row in enumerate(normalize_semi_markov_transition_rows(rows), start=1):
         strategy_id = _text(row.get("strategy_id"), f"Transition row {index}: strategy_id")
         origin = _text(row.get("origin_state"), f"Transition row {index}: origin_state")
         destination = _text(row.get("destination_state"), f"Transition row {index}: destination_state")
@@ -112,6 +194,7 @@ def _compile_transition_groups(rows: Sequence[Mapping[str, Any]]):
         parameter_id = _text(row.get("parameter_id"), f"Transition row {index}: parameter_id")
         start = _float(row.get("start_time"), f"Transition row {index}: start_time")
         end = _optional_float(row.get("end_time"))
+        source_interval = _optional_float(row.get("source_interval_years"))
         key = (
             strategy_id,
             origin,
@@ -120,8 +203,14 @@ def _compile_transition_groups(rows: Sequence[Mapping[str, Any]]):
             probability_mode,
             time_basis,
         )
+        group = groups.setdefault(key, {"bands": [], "source_interval_years": source_interval})
+        if group["source_interval_years"] != source_interval:
+            raise BuilderValidationError(
+                f"Transition {origin} -> {destination} uses different source probability intervals across time bands. "
+                "Use one source interval for all bands of the same converted transition."
+            )
         try:
-            groups.setdefault(key, []).append(ParameterBand(start, parameter_id, end))
+            group["bands"].append(ParameterBand(start, parameter_id, end))
         except ValueError as exc:
             raise BuilderValidationError(str(exc)) from exc
     return groups
@@ -129,9 +218,9 @@ def _compile_transition_groups(rows: Sequence[Mapping[str, Any]]):
 
 def compile_dynamic_transitions(rows: Sequence[Mapping[str, Any]]):
     by_strategy: dict[str, list[DynamicTransition]] = {}
-    for key, bands in _compile_transition_groups(rows).items():
+    for key, group in _compile_transition_groups(rows).items():
         strategy_id, origin, destination, input_type, probability_mode, time_basis = key
-        bands = sorted(bands, key=lambda band: band.start)
+        bands = sorted(group["bands"], key=lambda band: band.start)
         try:
             schedule = PiecewiseParameterSchedule(time_basis, tuple(bands))
             transition = DynamicTransition(
@@ -140,6 +229,7 @@ def compile_dynamic_transitions(rows: Sequence[Mapping[str, Any]]):
                 schedule=schedule,
                 input_type=input_type,
                 probability_mode=probability_mode,
+                source_interval_years=group["source_interval_years"],
             )
         except ValueError as exc:
             raise BuilderValidationError(str(exc)) from exc
@@ -154,9 +244,25 @@ def compile_initial(rows: Sequence[Mapping[str, Any]]):
             continue
         strategy_id = _text(row.get("strategy_id"), f"Initial row {index}: strategy_id")
         state_id = _text(row.get("state_id"), f"Initial row {index}: state_id")
-        proportion = _float(row.get("proportion"), f"Initial row {index}: proportion")
+        mode = (
+            _optional_text(row.get("proportion_mode"))
+            or _optional_text(row.get("allocation_mode"))
+            or "fixed"
+        ).lower()
+        parameter_id = (
+            _optional_text(row.get("proportion_parameter_id"))
+            or _optional_text(row.get("parameter_id"))
+        )
+        proportion = None if mode != "fixed" else _float(
+            row.get("proportion"), f"Initial row {index}: proportion"
+        )
         try:
-            allocation = InitialStateAllocation(state_id, proportion)
+            allocation = InitialStateAllocation(
+                state_id=state_id,
+                proportion=proportion,
+                proportion_parameter_id=parameter_id,
+                proportion_mode=mode,
+            )
         except ValueError as exc:
             raise BuilderValidationError(str(exc)) from exc
         by_strategy.setdefault(strategy_id, []).append(allocation)

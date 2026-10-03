@@ -17,7 +17,7 @@ from model.semi_markov_builder import compile_semi_markov_tables
 
 STATE_TRANSITION_SCHEMA_VERSION = "0.2"
 STATE_TRANSITION_AUDIT_VERSION = "0.2"
-STATE_TRANSITION_PLATFORM_VERSION = "0.7"
+STATE_TRANSITION_PLATFORM_VERSION = "0.13"
 StateTransitionModelType = Literal["cohort_markov", "semi_markov"]
 
 

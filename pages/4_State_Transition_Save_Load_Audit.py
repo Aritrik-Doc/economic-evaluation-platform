@@ -5,8 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from model.currency import CURRENCIES
-from model.economics import OUTCOME_MEASURES, Strategy, fully_incremental_analysis
+from model.economics import Strategy, fully_incremental_analysis
 from model.markov import run_cohort_markov
 from model.reference_cases import REFERENCE_CASES
 from model.semi_markov import run_semi_markov
@@ -23,13 +22,12 @@ from model.state_transition_persistence import (
 
 st.set_page_config(page_title="State-Transition Save / Load / Audit", page_icon="💾", layout="wide")
 st.title("💾 State-Transition Save / Load / Audit")
-st.caption("Version 0.7 — one versioned file family for homogeneous cohort Markov and advanced semi-Markov models")
+st.caption("Version 0.13 — active settings are part of the reproducible model snapshot")
 
 st.info(
-    "Saved files contain the editable model tables, methods settings, engine settings and a SHA-256 content hash. "
-    "Uploaded files are recompiled before they are accepted. Audit records embed the complete model snapshot used for the run."
+    "Saved files contain the editable model tables, the exact active methods/engine settings and a SHA-256 content hash. "
+    "Uploaded files are recompiled before acceptance. Restoring a model also restores its analysis settings and invalidates stale PSA results."
 )
-
 
 COHORT_KEYS = {
     "parameters": "markov_parameters",
@@ -53,8 +51,8 @@ SEMI_KEYS = {
 }
 
 
-def _session_has(keys):
-    return all(value in st.session_state for value in keys.values())
+def _session_has(mapping):
+    return all(key in st.session_state for key in mapping.values())
 
 
 def _session_tables(model_type):
@@ -65,6 +63,121 @@ def _session_tables(model_type):
     data.setdefault("mortality_table", [])
     data.setdefault("mortality_rules", [])
     return data
+
+
+def _termination(value: str) -> str:
+    return "cohort_depletion" if str(value) in {"Cohort depletion", "cohort_depletion"} else "fixed_cycles"
+
+
+def _loaded_settings(model_type):
+    key = "loaded_cohort_markov_settings" if model_type == "cohort_markov" else "loaded_semi_markov_settings"
+    loaded = st.session_state.get(key) or {}
+    return dict(loaded.get("methods") or {}), dict(loaded.get("engine") or {})
+
+
+def _active_settings(model_type):
+    """Return the methods and engine settings currently driving the builder."""
+    loaded_methods, loaded_engine = _loaded_settings(model_type)
+    if model_type == "cohort_markov":
+        profile_code = st.session_state.get("mk_reference_case", loaded_methods.get("reference_case_code", "NICE_TA"))
+        profile = REFERENCE_CASES.get(profile_code)
+        methods = {
+            "reference_case_code": profile_code,
+            "outcome_code": st.session_state.get("mk_outcome", loaded_methods.get("outcome_code", "QALY")),
+            "currency_code": st.session_state.get("mk_currency", loaded_methods.get("currency_code", "GBP")),
+            "threshold": float(st.session_state.get("mk_threshold", loaded_methods.get("threshold", 0.0) or 0.0)),
+            "perspective_label": loaded_methods.get("perspective_label") or (profile.perspective.label if profile else "Healthcare payer"),
+            "included_cost_bearers": [
+                item.strip()
+                for item in str(st.session_state.get("mk_cost_bearers", ", ".join(loaded_methods.get("included_cost_bearers", ["health_system"])))).split(",")
+                if item.strip()
+            ],
+            "cost_discount_rate": float(st.session_state.get("mk_cost_discount", loaded_methods.get("cost_discount_rate", 0.035))),
+            "outcome_discount_rate": float(st.session_state.get("mk_outcome_discount", loaded_methods.get("outcome_discount_rate", 0.035))),
+        }
+        cycle_months = int(st.session_state.get("mk_cycle_months", round(float(loaded_engine.get("cycle_length_years", 1.0)) * 12)))
+        horizon_years = int(st.session_state.get("mk_horizon_years", round(float(loaded_engine.get("max_cycles", 20)) * float(loaded_engine.get("cycle_length_years", 1.0)))))
+        cycle_years = cycle_months / 12.0
+        engine = {
+            "cycle_length_years": cycle_years,
+            "max_cycles": int(round(horizon_years / cycle_years)),
+            "state_accrual_timing": st.session_state.get("mk_state_accrual", loaded_engine.get("state_accrual_timing", "half_cycle")),
+            "transition_reward_timing": st.session_state.get("mk_transition_timing", loaded_engine.get("transition_reward_timing", "mid_cycle")),
+            "termination_mode": _termination(st.session_state.get("mk_termination", loaded_engine.get("termination_mode", "fixed_cycles"))),
+            "depletion_threshold": float(st.session_state.get("mk_depletion", loaded_engine.get("depletion_threshold", 0.0001))),
+        }
+        return methods, engine
+
+    methods = {
+        "reference_case_code": loaded_methods.get("reference_case_code", "CUSTOM"),
+        "outcome_code": st.session_state.get("adv_outcome", loaded_methods.get("outcome_code", "QALY")),
+        "currency_code": st.session_state.get("adv_currency", loaded_methods.get("currency_code", "GBP")),
+        "threshold": float(st.session_state.get("adv_threshold", loaded_methods.get("threshold", 0.0) or 0.0)),
+        "perspective_label": loaded_methods.get("perspective_label", "Healthcare payer"),
+        "included_cost_bearers": [
+            item.strip()
+            for item in str(st.session_state.get("adv_cost_bearers", ", ".join(loaded_methods.get("included_cost_bearers", ["health_system"])))).split(",")
+            if item.strip()
+        ],
+        "cost_discount_rate": float(st.session_state.get("adv_cost_discount", loaded_methods.get("cost_discount_rate", 0.035))),
+        "outcome_discount_rate": float(st.session_state.get("adv_outcome_discount", loaded_methods.get("outcome_discount_rate", 0.035))),
+    }
+    cycle_months = int(st.session_state.get("adv_cycle_months", round(float(loaded_engine.get("cycle_length_years", 1.0)) * 12)))
+    horizon_years = int(st.session_state.get("adv_horizon_years", round(float(loaded_engine.get("max_cycles", 20)) * float(loaded_engine.get("cycle_length_years", 1.0)))))
+    cycle_years = cycle_months / 12.0
+    engine = {
+        "cycle_length_years": cycle_years,
+        "max_cycles": int(round(horizon_years / cycle_years)),
+        "state_accrual_timing": st.session_state.get("adv_state_accrual", loaded_engine.get("state_accrual_timing", "half_cycle")),
+        "transition_reward_timing": st.session_state.get("adv_transition_timing", loaded_engine.get("transition_reward_timing", "mid_cycle")),
+        "termination_mode": _termination(st.session_state.get("adv_termination", loaded_engine.get("termination_mode", "fixed_cycles"))),
+        "depletion_threshold": float(st.session_state.get("adv_depletion", loaded_engine.get("depletion_threshold", 0.0001))),
+    }
+    return methods, engine
+
+
+def _seed_builder_settings(bundle):
+    methods = bundle["methods"]
+    engine = bundle["engine"]
+    model_type = bundle["model_type"]
+    cycle_months = max(1, int(round(float(engine["cycle_length_years"]) * 12)))
+    horizon_years = max(1, int(round(float(engine["max_cycles"]) * float(engine["cycle_length_years"]))))
+    termination_label = "Cohort depletion" if engine.get("termination_mode") == "cohort_depletion" else "Fixed horizon"
+
+    if model_type == "cohort_markov":
+        if methods.get("reference_case_code") in REFERENCE_CASES:
+            st.session_state["mk_reference_case"] = methods["reference_case_code"]
+        st.session_state["mk_outcome"] = methods["outcome_code"]
+        st.session_state["mk_currency"] = methods["currency_code"]
+        st.session_state["mk_threshold"] = float(methods.get("threshold") or 0.0)
+        st.session_state["mk_cost_discount"] = float(methods["cost_discount_rate"])
+        st.session_state["mk_outcome_discount"] = float(methods["outcome_discount_rate"])
+        st.session_state["mk_cost_bearers"] = ", ".join(methods["included_cost_bearers"])
+        st.session_state["mk_cycle_months"] = cycle_months
+        st.session_state["mk_horizon_years"] = horizon_years
+        st.session_state["mk_state_accrual"] = engine["state_accrual_timing"]
+        st.session_state["mk_transition_timing"] = engine["transition_reward_timing"]
+        st.session_state["mk_termination"] = termination_label
+        st.session_state["mk_depletion"] = float(engine["depletion_threshold"])
+        st.session_state.pop("markov_loaded_settings_applied", None)
+        st.session_state.pop("markov_psa_result", None)
+        st.session_state.pop("markov_psa_fingerprint", None)
+    else:
+        st.session_state["adv_outcome"] = methods["outcome_code"]
+        st.session_state["adv_currency"] = methods["currency_code"]
+        st.session_state["adv_threshold"] = float(methods.get("threshold") or 0.0)
+        st.session_state["adv_cost_discount"] = float(methods["cost_discount_rate"])
+        st.session_state["adv_outcome_discount"] = float(methods["outcome_discount_rate"])
+        st.session_state["adv_cost_bearers"] = ", ".join(methods["included_cost_bearers"])
+        st.session_state["adv_cycle_months"] = cycle_months
+        st.session_state["adv_horizon_years"] = horizon_years
+        st.session_state["adv_state_accrual"] = engine["state_accrual_timing"]
+        st.session_state["adv_transition_timing"] = engine["transition_reward_timing"]
+        st.session_state["adv_termination"] = termination_label
+        st.session_state["adv_depletion"] = float(engine["depletion_threshold"])
+        st.session_state.pop("adv_loaded_settings_applied", None)
+        st.session_state.pop("adv_psa_result", None)
+        st.session_state.pop("adv_psa_fingerprint", None)
 
 
 def _apply_bundle_to_session(bundle):
@@ -79,42 +192,40 @@ def _apply_bundle_to_session(bundle):
         "engine": dict(bundle["engine"]),
         "model_name": bundle["model_name"],
         "metadata": dict(bundle.get("metadata") or {}),
+        "restore_token": bundle["content_hash_sha256"],
     }
+    _seed_builder_settings(bundle)
 
 
 def _run_bundle(bundle):
     compiled = compile_loaded_state_transition_bundle(bundle)
     methods = bundle["methods"]
-    model_type = bundle["model_type"]
-    run_kwargs = dict(
+    kwargs = dict(
         included_cost_bearers=tuple(methods["included_cost_bearers"]),
         cost_discount_rate=float(methods["cost_discount_rate"]),
         outcome_discount_rate=float(methods["outcome_discount_rate"]),
     )
-    if model_type == "cohort_markov":
-        result = run_cohort_markov(compiled.model, compiled.parameters, **run_kwargs)
-    else:
-        result = run_semi_markov(compiled.model, compiled.parameters, **run_kwargs)
-    return compiled, result
+    if bundle["model_type"] == "cohort_markov":
+        return compiled, run_cohort_markov(compiled.model, compiled.parameters, **kwargs)
+    return compiled, run_semi_markov(compiled.model, compiled.parameters, **kwargs)
 
 
 def _result_rows(bundle, result):
-    methods = bundle["methods"]
-    threshold = methods.get("threshold")
-    output = []
-    for row in result.strategies:
-        item = {
-            "strategy_id": row.strategy_id,
-            "strategy": row.label,
-            "expected_cost": row.expected_cost,
-            "expected_outcome": row.expected_outcome,
-            "cycles_run": row.cycles_run,
-            "stopped_early": row.stopped_early,
+    threshold = bundle["methods"].get("threshold")
+    rows = []
+    for result_row in result.strategies:
+        row = {
+            "strategy_id": result_row.strategy_id,
+            "strategy": result_row.label,
+            "expected_cost": result_row.expected_cost,
+            "expected_outcome": result_row.expected_outcome,
+            "cycles_run": result_row.cycles_run,
+            "stopped_early": result_row.stopped_early,
         }
         if threshold is not None:
-            item["nmb"] = float(threshold) * row.expected_outcome - row.expected_cost
-        output.append(item)
-    return output
+            row["nmb"] = float(threshold) * result_row.expected_outcome - result_row.expected_cost
+        rows.append(row)
+    return rows
 
 
 save_tab, load_tab, audit_tab = st.tabs(["1 · Save / export", "2 · Load / restore", "3 · Validate / audit"])
@@ -128,77 +239,30 @@ with save_tab:
         available.append("semi_markov")
 
     if not available:
-        st.warning(
-            "No state-transition model tables are currently present in this Streamlit session. Open the Cohort Markov Builder or Advanced Markov Dynamics page first, then return here."
-        )
+        st.warning("Open a Cohort Markov or Advanced Markov builder first so there is an active model to save.")
     else:
         model_type = st.selectbox(
-            "Model to save",
-            available,
-            format_func=lambda value: "Cohort Markov" if value == "cohort_markov" else "Advanced semi-Markov",
+            "Model to save", available,
+            format_func=lambda value: "Cohort Markov" if value == "cohort_markov" else "Advanced semi-Markov"
         )
         model_name = st.text_input("Model name", value="Health-economic state-transition model")
         c1, c2 = st.columns(2)
         author = c1.text_input("Author / modeller", value="")
         notes = c2.text_input("Version / notes", value="")
-
-        st.markdown("#### Methods snapshot")
-        c1, c2, c3 = st.columns(3)
-        reference_case_code = c1.selectbox("Reference case", [*REFERENCE_CASES.keys(), "CUSTOM"])
-        preferred = REFERENCE_CASES[reference_case_code].preferred_outcome_code if reference_case_code in REFERENCE_CASES else "QALY"
-        outcome_code = c2.selectbox("Economic outcome", list(OUTCOME_MEASURES), index=list(OUTCOME_MEASURES).index(preferred))
-        default_currency = REFERENCE_CASES[reference_case_code].analysis_currency if reference_case_code in REFERENCE_CASES else "GBP"
-        currency_code = c3.selectbox("Analysis currency", list(CURRENCIES), index=list(CURRENCIES).index(default_currency) if default_currency in CURRENCIES else 0)
-
-        profile = REFERENCE_CASES.get(reference_case_code)
-        default_threshold = 0.0
-        if profile and profile.threshold_range is not None:
-            default_threshold = float((profile.threshold_range.lower + profile.threshold_range.upper) / 2)
-        c1, c2, c3 = st.columns(3)
-        threshold = c1.number_input("Decision threshold", min_value=0.0, value=default_threshold, step=1000.0)
-        cost_discount = c2.number_input("Cost discount rate", min_value=0.0, max_value=0.99, value=float(profile.cost_discount_rate if profile else 0.035), format="%.4f")
-        outcome_discount = c3.number_input("Outcome discount rate", min_value=0.0, max_value=0.99, value=float(profile.outcome_discount_rate if profile else 0.035), format="%.4f")
-        perspective_label = st.text_input("Perspective label", value=profile.perspective.label if profile else "Healthcare payer")
-        bearers_default = ", ".join(profile.perspective.included_cost_bearers) if profile else "health_system"
-        bearers_text = st.text_input("Included cost bearers", value=bearers_default)
-        included_cost_bearers = [item.strip() for item in bearers_text.split(",") if item.strip()]
-
-        st.markdown("#### Engine snapshot")
-        c1, c2, c3 = st.columns(3)
-        cycle_months = c1.selectbox("Cycle length", [1, 3, 6, 12], index=3, format_func=lambda x: f"{x} month" if x == 1 else f"{x} months")
-        horizon_years = int(c2.number_input("Maximum horizon (years)", min_value=1, max_value=200, value=20, step=1))
-        state_accrual = c3.selectbox("State accrual", ["half_cycle", "start", "end"])
-        cycle_length_years = cycle_months / 12.0
-        max_cycles = int(round(horizon_years / cycle_length_years))
-        c1, c2, c3 = st.columns(3)
-        transition_timing = c1.selectbox("Transition reward timing", ["mid_cycle", "start", "end"])
-        termination_mode = c2.selectbox("Termination", ["fixed_cycles", "cohort_depletion"])
-        depletion_threshold = c3.number_input("Depletion threshold", min_value=0.0, max_value=0.5, value=0.0001, format="%.6f")
-
+        methods, engine = _active_settings(model_type)
+        st.markdown("#### Active analysis settings")
+        st.caption(
+            "These values are read from the active builder and will be saved exactly with the model. Change them in the modeller rather than creating a second settings copy here."
+        )
+        st.json({"methods": methods, "engine": engine})
         tables = _session_tables(model_type)
         assert tables is not None
         try:
             current_bundle = build_state_transition_bundle(
                 model_type=model_type,
                 model_name=model_name,
-                methods={
-                    "reference_case_code": reference_case_code,
-                    "outcome_code": outcome_code,
-                    "currency_code": currency_code,
-                    "threshold": threshold,
-                    "perspective_label": perspective_label,
-                    "included_cost_bearers": included_cost_bearers,
-                    "cost_discount_rate": cost_discount,
-                    "outcome_discount_rate": outcome_discount,
-                },
-                engine={
-                    "cycle_length_years": cycle_length_years,
-                    "max_cycles": max_cycles,
-                    "state_accrual_timing": state_accrual,
-                    "transition_reward_timing": transition_timing,
-                    "termination_mode": termination_mode,
-                    "depletion_threshold": depletion_threshold,
-                },
+                methods=methods,
+                engine=engine,
                 parameter_rows=tables["parameters"],
                 state_rows=tables["states"],
                 strategy_rows=tables["strategies"],
@@ -211,7 +275,7 @@ with save_tab:
                 author=author,
                 notes=notes,
             )
-            st.success("Model recompiles successfully and is ready to save.")
+            st.success("Active model and settings recompile successfully and are ready to save.")
             st.code(current_bundle["content_hash_sha256"], language=None)
             st.download_button(
                 "Download model JSON",
@@ -231,18 +295,16 @@ with load_tab:
         try:
             loaded = load_state_transition_bundle(uploaded.getvalue())
             st.session_state.loaded_state_transition_bundle = loaded
-            st.success(
-                f"Validated {loaded['model_type'].replace('_', ' ')} model: **{loaded['model_name']}**"
-            )
+            st.success(f"Validated {loaded['model_type'].replace('_', ' ')} model: **{loaded['model_name']}**")
             c1, c2, c3 = st.columns(3)
             c1.metric("Schema", loaded["schema_version"])
             c2.metric("Parameters", len(loaded["model"]["parameters"]))
             c3.metric("Strategies", len(loaded["model"]["strategies"]))
             st.code(loaded["content_hash_sha256"], language=None)
-            if st.button("Restore editable model tables to this session", type="primary"):
+            if st.button("Restore model and analysis settings to this session", type="primary"):
                 _apply_bundle_to_session(loaded)
                 st.success(
-                    "Editable tables restored. Open the corresponding builder page. The saved methods/engine settings are retained in session metadata and are shown below so you can reproduce them exactly."
+                    "Model tables and saved analysis settings were restored. Previous PSA results for that modeller were cleared because they belong to the prior model/settings state."
                 )
             with st.expander("Saved methods and engine settings", expanded=True):
                 st.json({"methods": loaded["methods"], "engine": loaded["engine"], "metadata": loaded.get("metadata")})
@@ -258,23 +320,24 @@ with audit_tab:
         candidates.append("Current saved model")
     if st.session_state.get("loaded_state_transition_bundle") is not None:
         candidates.append("Uploaded model")
-
     if not candidates:
         st.info("Create or upload a valid model bundle first.")
     else:
         choice = st.radio("Model snapshot", candidates, horizontal=True)
-        bundle = st.session_state.current_state_transition_bundle if choice == "Current saved model" else st.session_state.loaded_state_transition_bundle
+        bundle = (
+            st.session_state.current_state_transition_bundle
+            if choice == "Current saved model"
+            else st.session_state.loaded_state_transition_bundle
+        )
         try:
             _, result = _run_bundle(bundle)
             rows = _result_rows(bundle, result)
-            st.success("Saved snapshot recompiled and reran successfully.")
+            st.success("Saved snapshot recompiled and reran successfully using the settings stored in that file.")
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
             threshold = bundle["methods"].get("threshold")
             if threshold is not None:
                 economic = [Strategy(row.label, row.expected_cost, row.expected_outcome) for row in result.strategies]
                 incremental = fully_incremental_analysis(economic, float(threshold))
-                st.caption("Fully incremental frontier status is recalculated from the saved model outputs, not stored as a fixed result.")
                 st.dataframe(
                     pd.DataFrame([
                         {
@@ -291,7 +354,6 @@ with audit_tab:
                     use_container_width=True,
                     hide_index=True,
                 )
-
             if st.button("Append base-case audit record", type="primary"):
                 record = build_state_transition_audit_record(
                     bundle,
@@ -309,7 +371,6 @@ with audit_tab:
                 records.append(record)
                 st.session_state.state_transition_audit_records = records
                 st.success(f"Audit record created: {record['run_id']}")
-
             records = st.session_state.get("state_transition_audit_records", [])
             if records:
                 st.write(f"**Audit records in this session:** {len(records)}")
@@ -324,5 +385,5 @@ with audit_tab:
 
 st.divider()
 st.caption(
-    "Loaded structural tables are restored into the appropriate builder session. The persistence file remains the authoritative snapshot for methods and engine settings; builders will be consolidated to consume those settings directly in the next UI-refinement pass."
+    "A saved state-transition file is the authoritative reproducibility snapshot: model structure, parameter evidence, cycle settings, horizon, discounting, threshold and perspective travel together."
 )
