@@ -18,10 +18,11 @@ pages = {
     "Start": [
         st.Page("pages/0_Home.py", title="Home", icon="🏠", default=True),
     ],
-    "Economic models": [
+    "Economic & affordability models": [
         st.Page("pages/1_Decision_Tree_Builder.py", title="Decision Tree Modeller", icon="🌿"),
         st.Page("pages/2_Cohort_Markov_Builder.py", title="Cohort Markov Modeller", icon="🔁"),
         st.Page("pages/3_Advanced_Markov_Dynamics.py", title="Advanced Markov Dynamics", icon="🧭"),
+        st.Page("pages/6_Budget_Impact_Analysis.py", title="Budget Impact Analysis", icon="💰"),
     ],
     "Review & reproducibility": [
         st.Page("pages/4_State_Transition_Save_Load_Audit.py", title="Save / Load / Audit", icon="💾"),
