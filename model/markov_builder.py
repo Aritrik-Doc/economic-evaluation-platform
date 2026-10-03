@@ -120,11 +120,16 @@ def compile_markov_tables(
         sid = _text(row.get("strategy_id"), f"Initial row {index}: strategy_id")
         if sid not in strategy_names:
             raise BuilderValidationError(f"Initial row references unknown strategy '{sid}'.")
+        mode = (_optional_text(row.get("proportion_mode")) or _optional_text(row.get("allocation_mode")) or "fixed").lower()
+        parameter_id = _optional_text(row.get("proportion_parameter_id")) or _optional_text(row.get("parameter_id"))
+        proportion = None if mode != "fixed" else _float(row.get("proportion"), f"Initial row {index}: proportion")
         try:
             initial_by_strategy[sid].append(
                 InitialStateAllocation(
                     state_id=_text(row.get("state_id"), f"Initial row {index}: state_id"),
-                    proportion=_float(row.get("proportion"), f"Initial row {index}: proportion"),
+                    proportion=proportion,
+                    proportion_parameter_id=parameter_id,
+                    proportion_mode=mode,
                 )
             )
         except ValueError as exc:
