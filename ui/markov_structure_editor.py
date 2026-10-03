@@ -1,8 +1,8 @@
 """Guided Streamlit editors for cohort and semi-Markov model structure.
 
-These components deliberately keep the row-oriented model tables as the source of
-truth while presenting a friendlier choose/configure/add workflow. Raw tables
-remain available under an Advanced expander for experienced modellers.
+The row-oriented tables remain the source of truth, while the normal workflow
+uses choose/configure/add controls. v0.13 adds parameter-linked starting cohorts
+and an explicit probability-to-rate transition representation.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from model.guided_markov import (
     delete_state,
     delete_strategy,
     delete_transition,
-    slugify,
     update_state,
     update_strategy,
 )
@@ -57,6 +56,19 @@ def _parameter_labels(parameters: Sequence[Mapping[str, Any]]) -> dict[str, str]
     }
 
 
+def _parameter_values(parameters: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for row in parameters:
+        pid = str(row.get("id") or "").strip()
+        if not pid:
+            continue
+        try:
+            values[pid] = float(row.get("value"))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 def render_states(
     *,
     states_key: str,
@@ -83,31 +95,20 @@ def render_states(
         with st.expander(f"{name}  (`{sid}`){badge}", expanded=False):
             c1, c2 = st.columns([3, 1])
             new_name = c1.text_input(
-                "State name",
-                value=name,
-                key=f"{key_prefix}_state_name_{sid}_{index}",
+                "State name", value=name, key=f"{key_prefix}_state_name_{sid}_{index}"
             )
             new_absorbing = c2.toggle(
-                "Absorbing",
-                value=absorbing,
-                key=f"{key_prefix}_state_abs_{sid}_{index}",
+                "Absorbing", value=absorbing, key=f"{key_prefix}_state_abs_{sid}_{index}"
             )
             st.caption(f"Stable state ID: `{sid}`")
             if new_name != name or new_absorbing != absorbing:
                 try:
-                    states = update_state(
-                        states,
-                        sid,
-                        name=new_name,
-                        absorbing=new_absorbing,
-                    )
+                    states = update_state(states, sid, name=new_name, absorbing=new_absorbing)
                     st.session_state[states_key] = states
                 except GuidedMarkovError as exc:
                     st.error(str(exc))
             if st.button(
-                "Delete state",
-                key=f"{key_prefix}_delete_state_{sid}_{index}",
-                type="secondary",
+                "Delete state", key=f"{key_prefix}_delete_state_{sid}_{index}", type="secondary"
             ):
                 delete_id = sid
 
@@ -121,17 +122,18 @@ def render_states(
                 state_rewards=st.session_state[state_rewards_key],
                 transition_rewards=st.session_state[transition_rewards_key],
                 mortality_rules=(
-                    st.session_state[mortality_rules_key]
-                    if mortality_rules_key is not None
-                    else ()
+                    st.session_state[mortality_rules_key] if mortality_rules_key else ()
                 ),
             )
-            st.session_state[states_key] = result["states"]
-            st.session_state[initial_key] = result["initial"]
-            st.session_state[transitions_key] = result["transitions"]
-            st.session_state[state_rewards_key] = result["state_rewards"]
-            st.session_state[transition_rewards_key] = result["transition_rewards"]
-            if mortality_rules_key is not None:
+            for result_key, session_key in (
+                ("states", states_key),
+                ("initial", initial_key),
+                ("transitions", transitions_key),
+                ("state_rewards", state_rewards_key),
+                ("transition_rewards", transition_rewards_key),
+            ):
+                st.session_state[session_key] = result[result_key]
+            if mortality_rules_key:
                 st.session_state[mortality_rules_key] = result["mortality_rules"]
             st.rerun()
         except GuidedMarkovError as exc:
@@ -142,12 +144,8 @@ def render_states(
         c1, c2 = st.columns([2, 1])
         new_name = c1.text_input("State name", placeholder="e.g. Progressed disease")
         new_absorbing = c2.checkbox("Absorbing state")
-        new_id = st.text_input(
-            "State ID (optional)",
-            placeholder="Generated automatically from the name",
-        )
-        submitted = st.form_submit_button("+ Add state")
-        if submitted:
+        new_id = st.text_input("State ID (optional)", placeholder="Generated automatically from the name")
+        if st.form_submit_button("+ Add state"):
             try:
                 st.session_state[states_key] = add_state(
                     st.session_state[states_key],
@@ -172,25 +170,21 @@ def render_strategies(
 ) -> None:
     strategies = [dict(row) for row in st.session_state[strategies_key]]
     st.markdown("#### 2. Strategies")
-    st.caption(
-        "Strategies are the mutually exclusive alternatives being compared, such as standard care and a new treatment."
-    )
-
+    st.caption("Define the mutually exclusive alternatives being compared.")
     delete_id: str | None = None
     for index, original in enumerate(strategies):
         sid = str(original.get("strategy_id") or "")
         name = str(original.get("strategy_name") or sid)
         with st.expander(f"{name}  (`{sid}`)", expanded=False):
             new_name = st.text_input(
-                "Strategy name",
-                value=name,
-                key=f"{key_prefix}_strategy_name_{sid}_{index}",
+                "Strategy name", value=name, key=f"{key_prefix}_strategy_name_{sid}_{index}"
             )
             st.caption(f"Stable strategy ID: `{sid}`")
             if new_name != name:
                 try:
-                    strategies = update_strategy(strategies, sid, name=new_name)
-                    st.session_state[strategies_key] = strategies
+                    st.session_state[strategies_key] = update_strategy(
+                        strategies, sid, name=new_name
+                    )
                 except GuidedMarkovError as exc:
                     st.error(str(exc))
             if st.button(
@@ -210,17 +204,18 @@ def render_strategies(
                 state_rewards=st.session_state[state_rewards_key],
                 transition_rewards=st.session_state[transition_rewards_key],
                 mortality_rules=(
-                    st.session_state[mortality_rules_key]
-                    if mortality_rules_key is not None
-                    else ()
+                    st.session_state[mortality_rules_key] if mortality_rules_key else ()
                 ),
             )
-            st.session_state[strategies_key] = result["strategies"]
-            st.session_state[initial_key] = result["initial"]
-            st.session_state[transitions_key] = result["transitions"]
-            st.session_state[state_rewards_key] = result["state_rewards"]
-            st.session_state[transition_rewards_key] = result["transition_rewards"]
-            if mortality_rules_key is not None:
+            for result_key, session_key in (
+                ("strategies", strategies_key),
+                ("initial", initial_key),
+                ("transitions", transitions_key),
+                ("state_rewards", state_rewards_key),
+                ("transition_rewards", transition_rewards_key),
+            ):
+                st.session_state[session_key] = result[result_key]
+            if mortality_rules_key:
                 st.session_state[mortality_rules_key] = result["mortality_rules"]
             st.rerun()
         except GuidedMarkovError as exc:
@@ -229,12 +224,8 @@ def render_strategies(
     with st.form(f"{key_prefix}_add_strategy_form", clear_on_submit=True):
         st.markdown("**Add another strategy**")
         new_name = st.text_input("Strategy name", placeholder="e.g. New treatment")
-        new_id = st.text_input(
-            "Strategy ID (optional)",
-            placeholder="Generated automatically from the name",
-        )
-        submitted = st.form_submit_button("+ Add strategy")
-        if submitted:
+        new_id = st.text_input("Strategy ID (optional)", placeholder="Generated automatically from the name")
+        if st.form_submit_button("+ Add strategy"):
             try:
                 st.session_state[strategies_key] = add_strategy(
                     st.session_state[strategies_key],
@@ -246,22 +237,62 @@ def render_strategies(
                 st.error(str(exc))
 
 
+def _infer_parameters_key(key_prefix: str) -> str | None:
+    if key_prefix.startswith("adv") and "adv_parameters" in st.session_state:
+        return "adv_parameters"
+    if key_prefix.startswith("mk") and "markov_parameters" in st.session_state:
+        return "markov_parameters"
+    return None
+
+
+def _allocation_base_value(
+    row: Mapping[str, Any], parameter_values: Mapping[str, float]
+) -> float | None:
+    mode = str(row.get("proportion_mode") or row.get("allocation_mode") or "fixed").lower()
+    if mode == "fixed":
+        try:
+            return float(row.get("proportion") or 0.0)
+        except (TypeError, ValueError):
+            return None
+    pid = str(row.get("proportion_parameter_id") or row.get("parameter_id") or "")
+    if pid not in parameter_values:
+        return None
+    value = parameter_values[pid]
+    return value if mode == "direct" else 1.0 - value
+
+
 def render_initial_distribution(
     *,
     states_key: str,
     strategies_key: str,
     initial_key: str,
     key_prefix: str,
+    parameters_key: str | None = None,
 ) -> None:
     states = [dict(row) for row in st.session_state[states_key]]
     strategies = [dict(row) for row in st.session_state[strategies_key]]
     state_labels = _state_labels(states)
     strategy_labels = _strategy_labels(strategies)
     strategy_ids = list(strategy_labels)
+    parameters_key = parameters_key or _infer_parameters_key(key_prefix)
+    parameter_rows = (
+        [dict(row) for row in st.session_state[parameters_key]]
+        if parameters_key and parameters_key in st.session_state
+        else []
+    )
+    probability_parameters = [
+        row for row in parameter_rows
+        if str(row.get("category") or "").lower() != "cost"
+        and row.get("id")
+        and 0 <= float(row.get("value") or 0.0) <= 1
+    ]
+    parameter_labels = _parameter_labels(probability_parameters)
+    parameter_values = _parameter_values(probability_parameters)
 
     st.markdown("#### 3. Starting cohort")
     st.caption(
-        "For each strategy, specify where the cohort is located at time zero. The proportions must sum to 1."
+        "Specify where the cohort is located at time zero. A state may use a fixed proportion or be linked to a probability parameter. "
+        "Parameter linkage is essential when a quantity such as cure/SVR should change in DSA or PSA."
     )
     if not strategy_ids or not state_labels:
         st.info("Add at least one strategy and one health state first.")
@@ -274,35 +305,100 @@ def render_initial_distribution(
         key=f"{key_prefix}_initial_strategy",
     )
     existing = {
-        str(row.get("state_id")): float(row.get("proportion") or 0.0)
+        str(row.get("state_id")): dict(row)
         for row in st.session_state[initial_key]
         if str(row.get("strategy_id")) == selected_strategy
     }
 
-    allocations: dict[str, float] = {}
-    columns = st.columns(2)
+    configured: list[dict[str, Any]] = []
+    base_values: list[float] = []
     for index, (state_id, label) in enumerate(state_labels.items()):
-        allocations[state_id] = columns[index % 2].number_input(
-            label,
-            min_value=0.0,
-            max_value=1.0,
-            value=float(existing.get(state_id, 0.0)),
-            step=0.01,
-            format="%.6f",
-            key=f"{key_prefix}_initial_{selected_strategy}_{state_id}",
+        row = existing.get(state_id, {})
+        old_mode = str(row.get("proportion_mode") or row.get("allocation_mode") or "fixed").lower()
+        labels = {
+            "fixed": "Fixed proportion",
+            "direct": "Use probability parameter",
+            "complement": "Use 1 − probability parameter",
+        }
+        mode = st.selectbox(
+            f"{label} · definition",
+            ["fixed", "direct", "complement"],
+            index=["fixed", "direct", "complement"].index(old_mode) if old_mode in labels else 0,
+            format_func=lambda value: labels[value],
+            key=f"{key_prefix}_initial_mode_{selected_strategy}_{state_id}",
         )
+        if mode == "fixed":
+            value = st.number_input(
+                f"{label} · starting proportion",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(row.get("proportion") or 0.0),
+                step=0.01,
+                format="%.6f",
+                key=f"{key_prefix}_initial_fixed_{selected_strategy}_{state_id}",
+            )
+            configured.append(
+                {
+                    "strategy_id": selected_strategy,
+                    "state_id": state_id,
+                    "proportion": float(value),
+                    "proportion_mode": "fixed",
+                    "proportion_parameter_id": "",
+                }
+            )
+            base_values.append(float(value))
+        else:
+            if not parameter_labels:
+                st.warning("Add a probability-like parameter before linking the starting cohort.")
+                pid = ""
+            else:
+                previous = str(row.get("proportion_parameter_id") or row.get("parameter_id") or "")
+                options = list(parameter_labels)
+                default_index = options.index(previous) if previous in options else 0
+                pid = st.selectbox(
+                    f"{label} · probability parameter",
+                    options,
+                    index=default_index,
+                    format_func=lambda item: f"{parameter_labels[item]}  (`{item}`)",
+                    key=f"{key_prefix}_initial_parameter_{selected_strategy}_{state_id}",
+                )
+            configured.append(
+                {
+                    "strategy_id": selected_strategy,
+                    "state_id": state_id,
+                    "proportion": None,
+                    "proportion_mode": mode,
+                    "proportion_parameter_id": pid,
+                }
+            )
+            if pid in parameter_values:
+                base_values.append(parameter_values[pid] if mode == "direct" else 1.0 - parameter_values[pid])
 
-    total = sum(allocations.values())
-    if abs(total - 1.0) <= 1e-8:
-        st.success(f"Starting distribution sums to 1.000000 for {strategy_labels[selected_strategy]}.")
+    current_total = sum(base_values) if len(base_values) == len(configured) else None
+    if current_total is None:
+        st.warning("The current base-case starting distribution cannot be resolved until all linked parameters are valid.")
+        valid_total = False
+    elif abs(current_total - 1.0) <= 1e-8:
+        st.success(
+            f"Resolved base-case starting distribution sums to 1.000000 for {strategy_labels[selected_strategy]}."
+        )
+        valid_total = True
     else:
-        st.warning(f"Starting distribution currently sums to {total:.6f}; it must equal 1 before the model can run.")
+        st.warning(
+            f"Resolved base-case starting distribution currently sums to {current_total:.6f}; it must equal 1 before the model can run."
+        )
+        valid_total = False
+
+    st.caption(
+        "For a binary response split, a robust pattern is one state = parameter and the other = 1 − parameter. "
+        "For multi-category sampled allocations, use a coherent joint probability specification; the engine will not silently normalise invalid draws."
+    )
 
     if st.button(
         "Apply starting distribution",
         key=f"{key_prefix}_apply_initial_{selected_strategy}",
         type="primary",
-        disabled=abs(total - 1.0) > 1e-8,
+        disabled=not valid_total,
     ):
         remaining = [
             dict(row)
@@ -310,13 +406,8 @@ def render_initial_distribution(
             if str(row.get("strategy_id")) != selected_strategy
         ]
         remaining.extend(
-            {
-                "strategy_id": selected_strategy,
-                "state_id": state_id,
-                "proportion": value,
-            }
-            for state_id, value in allocations.items()
-            if value != 0
+            row for row in configured
+            if row["proportion_mode"] != "fixed" or float(row.get("proportion") or 0.0) != 0
         )
         st.session_state[initial_key] = remaining
         st.rerun()
@@ -324,19 +415,15 @@ def render_initial_distribution(
     if len(strategy_ids) > 1 and st.button(
         "Copy this starting distribution to all strategies",
         key=f"{key_prefix}_copy_initial_all",
-        disabled=abs(total - 1.0) > 1e-8,
+        disabled=not valid_total,
     ):
         rows: list[dict[str, Any]] = []
         for sid in strategy_ids:
-            rows.extend(
-                {
-                    "strategy_id": sid,
-                    "state_id": state_id,
-                    "proportion": value,
-                }
-                for state_id, value in allocations.items()
-                if value != 0
-            )
+            for original in configured:
+                row = dict(original)
+                row["strategy_id"] = sid
+                if row["proportion_mode"] != "fixed" or float(row.get("proportion") or 0.0) != 0:
+                    rows.append(row)
         st.session_state[initial_key] = rows
         st.rerun()
 
@@ -347,9 +434,7 @@ def _transition_summary(
     parameter_labels: Mapping[str, str],
 ) -> str:
     origin = state_labels.get(str(row.get("origin_state")), str(row.get("origin_state")))
-    destination = state_labels.get(
-        str(row.get("destination_state")), str(row.get("destination_state"))
-    )
+    destination = state_labels.get(str(row.get("destination_state")), str(row.get("destination_state")))
     mode = str(row.get("probability_mode") or "direct")
     parameter = str(row.get("probability_parameter_id") or "")
     if mode == "residual":
@@ -382,8 +467,7 @@ def render_standard_transitions(
 
     st.markdown("#### 4. Transitions")
     st.caption(
-        "Choose a strategy, the state patients leave, and the state they enter. "
-        "Use a residual transition for the probability left after the other exits from an origin state."
+        "Choose a strategy, the state patients leave, and the state they enter. Use a residual transition for the probability left after the other exits from an origin state."
     )
     if not state_ids or not strategy_ids:
         st.info("Add states and strategies before defining transitions.")
@@ -391,21 +475,9 @@ def render_standard_transitions(
 
     with st.form(f"{key_prefix}_add_transition_form", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
-        strategy_id = c1.selectbox(
-            "Strategy",
-            strategy_ids,
-            format_func=lambda sid: strategy_labels[sid],
-        )
-        origin = c2.selectbox(
-            "From state",
-            state_ids,
-            format_func=lambda sid: state_labels[sid],
-        )
-        destination = c3.selectbox(
-            "To state",
-            state_ids,
-            format_func=lambda sid: state_labels[sid],
-        )
+        strategy_id = c1.selectbox("Strategy", strategy_ids, format_func=lambda sid: strategy_labels[sid])
+        origin = c2.selectbox("From state", state_ids, format_func=lambda sid: state_labels[sid])
+        destination = c3.selectbox("To state", state_ids, format_func=lambda sid: state_labels[sid])
         mode = st.selectbox(
             "How is this probability defined?",
             ["direct", "complement", "residual"],
@@ -417,15 +489,14 @@ def render_standard_transitions(
         )
         if mode == "residual":
             parameter_id = ""
-            st.info("Residual transition probability = 1 − the sum of the other outgoing transition probabilities from this state.")
+            st.info("Residual probability = 1 − the sum of the other outgoing probabilities from this state.")
         else:
             parameter_id = st.selectbox(
                 "Probability parameter",
                 parameter_ids,
                 format_func=lambda pid: f"{parameter_labels[pid]}  (`{pid}`)",
             ) if parameter_ids else ""
-        submitted = st.form_submit_button("+ Add transition")
-        if submitted:
+        if st.form_submit_button("+ Add transition"):
             try:
                 st.session_state[transitions_key] = add_transition(
                     st.session_state[transitions_key],
@@ -441,42 +512,20 @@ def render_standard_transitions(
 
     st.markdown("**Existing transitions**")
     selected_strategy = st.selectbox(
-        "Show transitions for",
-        strategy_ids,
-        format_func=lambda sid: strategy_labels[sid],
-        key=f"{key_prefix}_show_transition_strategy",
+        "Show transitions for", strategy_ids, format_func=lambda sid: strategy_labels[sid], key=f"{key_prefix}_show_transition_strategy"
     )
-    visible = [
-        (index, row)
-        for index, row in enumerate(transitions)
-        if str(row.get("strategy_id")) == selected_strategy
-    ]
+    visible = [(index, row) for index, row in enumerate(transitions) if str(row.get("strategy_id")) == selected_strategy]
     if not visible:
         st.info("No transitions have been defined for this strategy yet.")
     delete_index: int | None = None
     for index, row in visible:
-        summary = _transition_summary(row, state_labels, parameter_labels)
-        with st.expander(summary, expanded=False):
-            c1, c2 = st.columns(2)
-            c1.write(f"**From:** {state_labels.get(str(row.get('origin_state')), row.get('origin_state'))}")
-            c2.write(f"**To:** {state_labels.get(str(row.get('destination_state')), row.get('destination_state'))}")
-            mode = str(row.get("probability_mode") or "direct")
-            if mode == "residual":
-                st.write("**Probability:** Remaining probability")
-            else:
-                pid = str(row.get("probability_parameter_id") or "")
-                text = parameter_labels.get(pid, pid)
-                st.write(f"**Probability:** {'1 − ' if mode == 'complement' else ''}{text}")
-            if st.button(
-                "Delete transition",
-                key=f"{key_prefix}_delete_transition_{index}",
-                type="secondary",
-            ):
+        with st.expander(_transition_summary(row, state_labels, parameter_labels), expanded=False):
+            st.write(f"**From:** {state_labels.get(str(row.get('origin_state')), row.get('origin_state'))}")
+            st.write(f"**To:** {state_labels.get(str(row.get('destination_state')), row.get('destination_state'))}")
+            if st.button("Delete transition", key=f"{key_prefix}_delete_transition_{index}", type="secondary"):
                 delete_index = index
     if delete_index is not None:
-        st.session_state[transitions_key] = delete_transition(
-            st.session_state[transitions_key], delete_index
-        )
+        st.session_state[transitions_key] = delete_transition(st.session_state[transitions_key], delete_index)
         st.rerun()
 
 
@@ -486,19 +535,17 @@ def _dynamic_summary(
     parameter_labels: Mapping[str, str],
 ) -> str:
     origin = state_labels.get(str(row.get("origin_state")), str(row.get("origin_state")))
-    destination = state_labels.get(
-        str(row.get("destination_state")), str(row.get("destination_state"))
-    )
+    destination = state_labels.get(str(row.get("destination_state")), str(row.get("destination_state")))
     start = float(row.get("start_time") or 0.0)
     raw_end = row.get("end_time")
     end = "∞" if raw_end in (None, "") else f"{float(raw_end):g}"
     basis = "time in state" if str(row.get("time_basis")) == "state_time" else "model time"
-    pid = str(row.get("parameter_id") or "")
+    pid = str(row.get("parameter_id") or row.get("probability_parameter_id") or "")
     representation = str(row.get("input_type") or "probability")
-    return (
-        f"{origin} → {destination} · {basis} {start:g}–{end} years · "
-        f"{representation}: {parameter_labels.get(pid, pid)}"
-    )
+    if representation == "probability_to_rate":
+        interval = row.get("source_interval_years")
+        representation = f"probability→rate ({interval:g} y source interval)" if interval not in (None, "") else "probability→rate"
+    return f"{origin} → {destination} · {basis} {start:g}–{end} years · {representation}: {parameter_labels.get(pid, pid)}"
 
 
 def render_dynamic_transitions(
@@ -522,8 +569,7 @@ def render_dynamic_transitions(
 
     st.markdown("#### 4. Time-varying / semi-Markov transitions")
     st.caption(
-        "Add one time band at a time. Use model time when a transition changes with time since the analysis began, "
-        "or time in state when it depends on how long patients have occupied the current state."
+        "Add one time band at a time. Model time represents time since analysis start; time in state represents time since entry to the current state."
     )
     if not state_ids or not strategy_ids or not parameter_ids:
         st.info("Add states, strategies and transition parameters before defining dynamic transitions.")
@@ -531,24 +577,38 @@ def render_dynamic_transitions(
 
     with st.form(f"{key_prefix}_add_dynamic_transition_form", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
-        strategy_id = c1.selectbox(
-            "Strategy",
-            strategy_ids,
-            format_func=lambda sid: strategy_labels[sid],
-        )
+        strategy_id = c1.selectbox("Strategy", strategy_ids, format_func=lambda sid: strategy_labels[sid])
         origin = c2.selectbox("From state", state_ids, format_func=lambda sid: state_labels[sid])
         destination = c3.selectbox("To state", state_ids, format_func=lambda sid: state_labels[sid])
         c1, c2 = st.columns(2)
         input_type = c1.selectbox(
             "Transition input",
-            ["probability", "rate"],
-            format_func=lambda value: "Probability for each model cycle" if value == "probability" else "Cause-specific rate / hazard per year",
+            ["probability", "rate", "probability_to_rate"],
+            format_func=lambda value: {
+                "probability": "Probability for each model cycle",
+                "rate": "Cause-specific rate / hazard per year",
+                "probability_to_rate": "Interval probability → constant cause-specific rate",
+            }[value],
         )
         time_basis = c2.selectbox(
             "What clock controls this band?",
             ["model_time", "state_time"],
             format_func=lambda value: "Time since model start" if value == "model_time" else "Time since entering the current state",
         )
+        if input_type == "probability_to_rate":
+            source_interval_years = st.number_input(
+                "Source probability interval (years)",
+                min_value=0.000001,
+                value=1.0,
+                step=0.25,
+                format="%.6f",
+            )
+            st.warning(
+                "This conversion assumes the entered interval probability can be represented by a constant cause-specific hazard over the source interval. "
+                "Use it only when that assumption is appropriate and document the rationale in the parameter evidence/assumption fields."
+            )
+        else:
+            source_interval_years = None
         c1, c2 = st.columns(2)
         start_time = c1.number_input("Band starts at (years)", min_value=0.0, value=0.0, step=0.25)
         open_ended = c2.checkbox("Final open-ended band", value=True)
@@ -556,23 +616,23 @@ def render_dynamic_transitions(
             end_time = None
             c2.caption("This band continues indefinitely.")
         else:
-            end_time = c2.number_input("Band ends at (years)", min_value=float(start_time) + 0.000001, value=max(float(start_time) + 1.0, 1.0), step=0.25)
+            end_time = c2.number_input(
+                "Band ends at (years)", min_value=float(start_time) + 0.000001,
+                value=max(float(start_time) + 1.0, 1.0), step=0.25
+            )
         parameter_id = st.selectbox(
-            "Transition parameter",
-            parameter_ids,
-            format_func=lambda pid: f"{parameter_labels[pid]}  (`{pid}`)",
+            "Transition parameter", parameter_ids,
+            format_func=lambda pid: f"{parameter_labels[pid]}  (`{pid}`)"
         )
         if input_type == "probability":
             probability_mode = st.selectbox(
-                "Probability definition",
-                ["direct", "complement"],
-                format_func=lambda value: "Use parameter directly" if value == "direct" else "Use 1 minus parameter",
+                "Probability definition", ["direct", "complement"],
+                format_func=lambda value: "Use parameter directly" if value == "direct" else "Use 1 minus parameter"
             )
         else:
             probability_mode = "direct"
-            st.caption("Rates are combined jointly as competing rates by the advanced engine.")
-        submitted = st.form_submit_button("+ Add transition band")
-        if submitted:
+            st.caption("Rate-based exits are combined jointly as competing cause-specific rates.")
+        if st.form_submit_button("+ Add transition band"):
             try:
                 st.session_state[transitions_key] = add_dynamic_transition(
                     st.session_state[transitions_key],
@@ -585,6 +645,7 @@ def render_dynamic_transitions(
                     start_time=start_time,
                     end_time=end_time,
                     probability_mode=probability_mode,
+                    source_interval_years=source_interval_years,
                 )
                 st.rerun()
             except GuidedMarkovError as exc:
@@ -592,40 +653,31 @@ def render_dynamic_transitions(
 
     st.markdown("**Existing schedule bands**")
     selected_strategy = st.selectbox(
-        "Show schedule for",
-        strategy_ids,
+        "Show schedule for", strategy_ids,
         format_func=lambda sid: strategy_labels[sid],
         key=f"{key_prefix}_show_dynamic_strategy",
     )
-    visible = [
-        (index, row)
-        for index, row in enumerate(transitions)
-        if str(row.get("strategy_id")) == selected_strategy
-    ]
+    visible = [(index, row) for index, row in enumerate(transitions) if str(row.get("strategy_id")) == selected_strategy]
     if not visible:
         st.info("No time-varying transition bands have been defined for this strategy yet.")
     delete_index: int | None = None
     for index, row in visible:
         with st.expander(_dynamic_summary(row, state_labels, parameter_labels), expanded=False):
             st.write(
-                f"**Input:** {row.get('input_type')} · **Clock:** {row.get('time_basis')} · "
-                f"**Parameter:** `{row.get('parameter_id')}`"
+                f"**Input:** {row.get('input_type', 'probability')} · **Clock:** {row.get('time_basis', 'model_time')} · "
+                f"**Parameter:** `{row.get('parameter_id') or row.get('probability_parameter_id')}`"
             )
+            if str(row.get("input_type")) == "probability_to_rate":
+                st.write(f"**Source probability interval:** {row.get('source_interval_years')} years")
             st.write(
-                f"**Band:** {row.get('start_time')} to {row.get('end_time') if row.get('end_time') not in (None, '') else 'open ended'} years"
+                f"**Band:** {row.get('start_time', 0)} to {row.get('end_time') if row.get('end_time') not in (None, '') else 'open ended'} years"
             )
-            if str(row.get("input_type")) == "probability":
+            if str(row.get("input_type") or "probability") == "probability":
                 st.write(f"**Probability mode:** {row.get('probability_mode', 'direct')}")
-            if st.button(
-                "Delete this band",
-                key=f"{key_prefix}_delete_dynamic_{index}",
-                type="secondary",
-            ):
+            if st.button("Delete this band", key=f"{key_prefix}_delete_dynamic_{index}", type="secondary"):
                 delete_index = index
     if delete_index is not None:
-        st.session_state[transitions_key] = delete_transition(
-            st.session_state[transitions_key], delete_index
-        )
+        st.session_state[transitions_key] = delete_transition(st.session_state[transitions_key], delete_index)
         st.rerun()
 
 
@@ -643,32 +695,29 @@ def render_raw_structure_tables(
             "This view is intended for experienced users and bulk edits. Invalid combinations will still be rejected by model validation."
         )
         states_df = st.data_editor(
-            pd.DataFrame(st.session_state[states_key]),
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"{key_prefix}_raw_states",
+            pd.DataFrame(st.session_state[states_key]), num_rows="dynamic", use_container_width=True,
+            key=f"{key_prefix}_raw_states"
         )
         strategies_df = st.data_editor(
-            pd.DataFrame(st.session_state[strategies_key]),
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"{key_prefix}_raw_strategies",
+            pd.DataFrame(st.session_state[strategies_key]), num_rows="dynamic", use_container_width=True,
+            key=f"{key_prefix}_raw_strategies"
         )
         initial_df = st.data_editor(
-            pd.DataFrame(st.session_state[initial_key]),
-            num_rows="dynamic",
-            use_container_width=True,
+            pd.DataFrame(st.session_state[initial_key]), num_rows="dynamic", use_container_width=True,
             key=f"{key_prefix}_raw_initial",
+            column_config={
+                "proportion_mode": st.column_config.SelectboxColumn(
+                    "proportion_mode", options=["fixed", "direct", "complement"]
+                )
+            },
         )
         if dynamic:
             transitions_df = st.data_editor(
-                pd.DataFrame(st.session_state[transitions_key]),
-                num_rows="dynamic",
-                use_container_width=True,
+                pd.DataFrame(st.session_state[transitions_key]), num_rows="dynamic", use_container_width=True,
                 key=f"{key_prefix}_raw_transitions",
                 column_config={
                     "input_type": st.column_config.SelectboxColumn(
-                        "input_type", options=["probability", "rate"]
+                        "input_type", options=["probability", "rate", "probability_to_rate"]
                     ),
                     "probability_mode": st.column_config.SelectboxColumn(
                         "probability_mode", options=["direct", "complement"]
@@ -680,14 +729,12 @@ def render_raw_structure_tables(
             )
         else:
             transitions_df = st.data_editor(
-                pd.DataFrame(st.session_state[transitions_key]),
-                num_rows="dynamic",
-                use_container_width=True,
+                pd.DataFrame(st.session_state[transitions_key]), num_rows="dynamic", use_container_width=True,
                 key=f"{key_prefix}_raw_transitions",
                 column_config={
                     "probability_mode": st.column_config.SelectboxColumn(
                         "probability_mode", options=["direct", "complement", "residual"]
-                    ),
+                    )
                 },
             )
         if st.button("Apply advanced table edits", key=f"{key_prefix}_apply_raw"):
