@@ -18,15 +18,11 @@ STATUS_LABELS = {
 
 
 def money(value: float | None, symbol: str) -> str:
-    if value is None:
-        return "—"
-    return f"{symbol}{value:,.2f}"
+    return "—" if value is None else f"{symbol}{value:,.2f}"
 
 
 def number(value: float | None) -> str:
-    if value is None:
-        return "—"
-    return f"{value:,.4f}"
+    return "—" if value is None else f"{value:,.4f}"
 
 
 def parse_threshold(text: str) -> float | None:
@@ -62,40 +58,60 @@ def explanation(row, outcome_label: str, symbol: str) -> str:
 
 hero(
     "Build transparent, reproducible health-economic models",
-    "Construct decision trees and state-transition models, document the evidence behind every parameter, explore uncertainty, and communicate cost-effectiveness and affordability results within a structured HEOR and HTA workflow.",
+    "Evaluate value for money and affordability in one structured HEOR and HTA environment. Build decision trees and state-transition models, run Budget Impact Analysis, document the evidence behind every important input, explore uncertainty, and preserve a reproducible analytical record.",
     eyebrow="Economic Evaluation Platform",
 )
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 with c1:
-    st.page_link("pages/1_Decision_Tree_Builder.py", label="Start a decision-tree model", icon="🌿")
+    st.page_link("pages/1_Decision_Tree_Builder.py", label="Decision Tree", icon="🌿")
 with c2:
-    st.page_link("pages/2_Cohort_Markov_Builder.py", label="Start a cohort Markov model", icon="🔁")
+    st.page_link("pages/2_Cohort_Markov_Builder.py", label="Cohort Markov", icon="🔁")
 with c3:
-    st.page_link("pages/4_State_Transition_Save_Load_Audit.py", label="Open / restore a saved model", icon="💾")
+    st.page_link("pages/6_Budget_Impact_Analysis.py", label="Budget Impact Analysis", icon="💷")
+with c4:
+    st.page_link("pages/4_State_Transition_Save_Load_Audit.py", label="Open saved model", icon="💾")
 
 st.markdown("## From evidence to decision")
 st.caption(
-    "The platform separates model structure, evidence, assumptions, uncertainty and decision analysis so each can be reviewed independently."
+    "The platform separates clinical structure, evidence, assumptions, uncertainty, economic value and affordability so each can be reviewed independently."
 )
-workflow_step(1, "Define the decision problem", "Specify population, interventions, comparators, perspective, reference case, horizon, discounting and outcome measure.")
-workflow_step(2, "Build the model", "Represent the clinical pathway using a decision tree, cohort state-transition model, or advanced semi-Markov dynamics.")
-workflow_step(3, "Document the evidence", "Attach sources, assumptions, rationale, uncertainty and cost metadata to the parameters that drive the model.")
-workflow_step(4, "Analyse value and affordability", "Explore cost effectiveness, uncertainty and—where relevant—budget impact for the population and budget holder.")
-workflow_step(5, "Review and reproduce", "Validate structure, inspect outputs, save the full model snapshot and retain reproducible audit information.")
+workflow_step(1, "Define the decision problem", "Specify population, intervention(s), comparator(s), perspective, jurisdiction, horizon and decision context.")
+workflow_step(2, "Build the clinical model", "Represent pathways using a decision tree, cohort state-transition model, or advanced semi-Markov dynamics where a clinical model is required.")
+workflow_step(3, "Document the evidence", "Attach sources, assumptions, rationale, uncertainty and costing metadata to the inputs that drive the analysis.")
+workflow_step(4, "Assess value and affordability", "Use cost-effectiveness analysis for value-for-money questions and Budget Impact Analysis for annual affordability and budget consequences.")
+workflow_step(5, "Review and reproduce", "Validate model structure, inspect outputs, review the Transparency check, save the model and retain audit information.")
+
+st.markdown("## Two complementary decision questions")
+c1, c2 = st.columns(2)
+with c1:
+    coloured_block(
+        "Cost-effectiveness analysis",
+        "Estimate expected costs and health outcomes across strategies, incremental costs and effects, ICERs, NMB/INMB, and decision uncertainty. Use the Decision Tree or Markov workspaces when the clinical pathway must be modelled explicitly.",
+        tone="blue",
+        kicker="Value for money",
+    )
+with c2:
+    coloured_block(
+        "Budget Impact Analysis",
+        "Estimate the annual and cumulative financial consequences of changing the treatment mix for a defined budget holder and eligible population. Model uptake, population growth, treatment costs, condition-related costs and payer-specific affordability over the budgeting horizon.",
+        tone="teal",
+        kicker="Affordability",
+    )
+    st.page_link("pages/6_Budget_Impact_Analysis.py", label="Open Budget Impact Analysis →", icon="💷")
 
 st.markdown("## Designed for transparent analysis")
 c1, c2, c3 = st.columns(3)
 with c1:
     card(
         "Evidence transparency",
-        "Sources, assumptions, uncertainty and methodological rationale are stored alongside model parameters rather than separated from the calculation.",
+        "Sources, assumptions, uncertainty and methodological rationale stay alongside the parameters and population/costing inputs that drive the analysis.",
         kicker="Document",
     )
 with c2:
     card(
         "Methodological consistency",
-        "Recognised reference-case profiles provide structured defaults and make departures visible without preventing justified alternative assumptions.",
+        "Recognised reference-case and budget-impact profiles provide structured defaults and make justified departures visible rather than hiding them.",
         kicker="Structure",
     )
 with c3:
@@ -107,67 +123,75 @@ with c3:
 
 coloured_block(
     "Transparency check",
-    "The platform checks whether important documentation is present — for example evidence sources, assumption rationales, DSA/PSA specifications, currency, price year and cost bearer. It identifies missing or provisional documentation but does not score scientific quality, risk of bias, or the credibility of a modelling choice.",
+    "The platform checks whether important documentation is present — for example evidence sources, assumption rationales, DSA/PSA specifications, population derivations, uptake assumptions, currency, price year and cost bearer. It identifies missing or provisional documentation but does not score scientific quality, risk of bias, or the credibility of a modelling choice.",
     tone="teal",
     kicker="A documentation safeguard — not a model quality score",
 )
 
 coloured_block(
     "Software validation does not replace scientific judgement",
-    "The platform can validate model structure, calculations and documentation completeness. The validity of an economic evaluation still depends on the quality and relevance of the evidence, assumptions and methodological choices supplied by the analyst. Users should document and justify those choices explicitly.",
+    "The platform can validate structure, calculations and documentation completeness. The validity of an economic evaluation or budget-impact estimate still depends on the quality and relevance of the evidence, assumptions and methodological choices supplied by the analyst. Users should document and justify those choices explicitly.",
     tone="amber",
     kicker="Reliability",
 )
 
-st.markdown("## Built around recognised HTA methods")
+st.markdown("## Built around recognised methods")
 c1, c2, c3 = st.columns(3)
 with c1:
     card(
         "NICE technology appraisal",
-        "A structured profile for NICE technology-appraisal economic evaluation, including the preferred health outcome, perspective and reference-case methodological settings.",
+        "A structured profile for NICE technology-appraisal economic evaluation, including the preferred outcome, perspective and reference-case methodological settings.",
         kicker="England",
     )
 with c2:
     card(
         "HTAIn / Indian Reference Case 2023",
-        "A structured Indian profile using the 2023 reference case, including the abridged societal perspective and India-specific outcome conventions.",
+        "A structured Indian profile for economic evaluation, alongside an India-specific Budget Impact Analysis methods profile for affordability assessment.",
         kicker="India",
     )
 with c3:
     card(
-        "Custom methods profile",
-        "Define perspective, horizon, discounting, currency, outcome and decision threshold when another jurisdiction or analytical specification is required.",
+        "Custom methods",
+        "Define local economic-evaluation or budget-impact assumptions when another jurisdiction, payer or analytical specification is required.",
         kicker="Extensible",
     )
-st.caption("The profile registry is designed to expand to additional recognised HTA systems as the platform develops.")
+st.caption("The methods registries are designed to expand to additional recognised HTA and budget-impact systems as the platform develops.")
 
-st.markdown("## Choose a modelling workspace")
-workspace_cols = st.columns(3)
-with workspace_cols[0]:
+st.markdown("## Choose a workspace")
+row1 = st.columns(2)
+with row1[0]:
     card(
         "Decision Tree Modeller",
         "Guided visual construction for short-horizon pathways and mutually exclusive events, with DSA, two-way analysis, threshold analysis and PSA.",
-        kicker="Pathway models",
+        kicker="Clinical + economic model",
     )
     st.page_link("pages/1_Decision_Tree_Builder.py", label="Open Decision Tree Modeller →")
-with workspace_cols[1]:
+with row1[1]:
     card(
         "Cohort Markov Modeller",
         "Guided health-state and transition modelling with cohort traces, rewards, uncertainty analysis and fully incremental cost-effectiveness analysis.",
-        kicker="State-transition models",
+        kicker="Clinical + economic model",
     )
     st.page_link("pages/2_Cohort_Markov_Builder.py", label="Open Cohort Markov Modeller →")
-with workspace_cols[2]:
+row2 = st.columns(2)
+with row2[0]:
     card(
         "Advanced Markov Dynamics",
         "Semi-Markov state-time memory, time-varying transitions, attained-age mortality and explicit hazard/rate conversion for more complex cohort models.",
-        kicker="Advanced dynamics",
+        kicker="Advanced clinical dynamics",
     )
     st.page_link("pages/3_Advanced_Markov_Dynamics.py", label="Open Advanced Dynamics →")
+with row2[1]:
+    card(
+        "Budget Impact Analysis",
+        "Model annual eligible populations, current and future treatment mix, uptake, payer costs, PMPM and annual/cumulative budget impact. Clinical-model linkage is being developed so downstream condition costs can be projected consistently from the clinical model.",
+        kicker="Affordability model",
+    )
+    st.page_link("pages/6_Budget_Impact_Analysis.py", label="Open Budget Impact Analysis →")
 
 with st.expander("Quick incremental analysis", expanded=False):
     st.write(
-        "Use this secondary tool when strategy-level expected costs and outcomes are already known. Parameter-driven modelling belongs in the dedicated modelling workspaces above."
+        "Use this secondary tool when strategy-level expected costs and outcomes are already known. Parameter-driven modelling belongs in the dedicated workspaces above."
     )
 
     with st.sidebar:
@@ -188,8 +212,7 @@ with st.expander("Quick incremental analysis", expanded=False):
             horizon_rule = st.text_input("Time horizon", value="Lifetime", key="home_horizon")
             cost_discount_pct = st.number_input("Cost discount rate (%)", 0.0, 99.0, 3.5, key="home_cost_disc")
             outcome_discount_pct = st.number_input("Outcome discount rate (%)", 0.0, 99.0, 3.5, key="home_outcome_disc")
-            threshold_text = st.text_input("Decision threshold", value="30000", key="home_threshold_custom")
-            threshold_value = parse_threshold(threshold_text)
+            threshold_value = parse_threshold(st.text_input("Decision threshold", value="30000", key="home_threshold_custom"))
             profile = custom_reference_case(
                 name=custom_name,
                 perspective_label=perspective_label,
