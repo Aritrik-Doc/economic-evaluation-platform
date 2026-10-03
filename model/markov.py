@@ -1,10 +1,10 @@
 """Cohort state-transition (Markov) engine for health-economic evaluation.
 
-Version 0.5 implements a closed-cohort, discrete-time, time-homogeneous model
-with explicit health states, strategy-specific transition matrices, state and
-transition rewards, discounting, optional trapezoidal (half-cycle) state
-accrual, parameter overrides, computational cost perspective, and bounded
-cohort-depletion termination.
+The engine supports closed-cohort, discrete-time state-transition models with
+strategy-specific transition matrices, state and transition rewards,
+discounting, optional half-cycle state accrual, parameter overrides,
+computational cost perspective, bounded cohort-depletion termination, and
+parameter-linked starting-cohort allocations.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from model.schema import Parameter
 
 
 ProbabilityMode = Literal["direct", "complement", "residual"]
+InitialAllocationMode = Literal["fixed", "direct", "complement"]
 RewardType = Literal["cost", "outcome"]
 RewardAccrual = Literal["per_cycle", "per_year"]
 StateAccrualTiming = Literal["start", "end", "half_cycle"]
@@ -43,14 +44,29 @@ class MarkovState:
 
 @dataclass(frozen=True)
 class InitialStateAllocation:
+    """Starting-cohort allocation.
+
+    ``fixed`` preserves the original numeric allocation behaviour. ``direct``
+    and ``complement`` make the allocation depend on a probability parameter so
+    DSA/PSA overrides propagate into the starting cohort (for example an SVR or
+    cure probability and its complement).
+    """
+
     state_id: str
-    proportion: float
+    proportion: float | None = None
+    proportion_parameter_id: str | None = None
+    proportion_mode: InitialAllocationMode = "fixed"
 
     def __post_init__(self) -> None:
         if not self.state_id.strip():
             raise ValueError("Initial-state allocation requires a state id.")
-        if not isfinite(self.proportion) or self.proportion < 0 or self.proportion > 1:
-            raise ValueError("Initial-state proportions must be finite values in [0, 1].")
+        if self.proportion_mode not in {"fixed", "direct", "complement"}:
+            raise ValueError("Initial allocation mode must be fixed, direct or complement.")
+        if self.proportion_mode == "fixed":
+            if self.proportion is None or not isfinite(self.proportion) or not 0 <= self.proportion <= 1:
+                raise ValueError("Fixed initial-state proportions must be finite values in [0, 1].")
+        elif not (self.proportion_parameter_id or "").strip():
+            raise ValueError("Parameter-linked initial allocations require a probability parameter id.")
 
 
 @dataclass(frozen=True)
@@ -208,12 +224,12 @@ class _ParameterResolver:
         parameter = self.parameter(parameter_id)
         if parameter.category == "cost":
             raise MarkovValidationError(
-                f"Transition probability '{parameter_id}' cannot reference a cost parameter."
+                f"Probability parameter '{parameter_id}' cannot reference a cost parameter."
             )
         value = self.value(parameter_id)
         if value < 0 or value > 1:
             raise MarkovValidationError(
-                f"Transition probability parameter '{parameter_id}' must lie between 0 and 1."
+                f"Probability parameter '{parameter_id}' must lie between 0 and 1."
             )
         return value
 
@@ -266,10 +282,20 @@ def _transition_reward_time(model: CohortMarkovDefinition, cycle: int) -> float:
     return start + 0.5 * model.cycle_length_years
 
 
+def _allocation_value(allocation: InitialStateAllocation, resolver: _ParameterResolver) -> float:
+    if allocation.proportion_mode == "fixed":
+        assert allocation.proportion is not None
+        return float(allocation.proportion)
+    assert allocation.proportion_parameter_id is not None
+    base = resolver.probability_parameter(allocation.proportion_parameter_id)
+    return base if allocation.proportion_mode == "direct" else 1.0 - base
+
+
 def _initial_vector(
     strategy: MarkovStrategyDefinition,
     state_index: Mapping[str, int],
     tolerance: float,
+    resolver: _ParameterResolver,
 ) -> np.ndarray:
     vector = np.zeros(len(state_index), dtype=float)
     seen: set[str] = set()
@@ -283,11 +309,12 @@ def _initial_vector(
                 f"Strategy '{strategy.strategy_id}' has duplicate initial allocation for state '{allocation.state_id}'."
             )
         seen.add(allocation.state_id)
-        vector[state_index[allocation.state_id]] = allocation.proportion
+        vector[state_index[allocation.state_id]] = _allocation_value(allocation, resolver)
     total = float(vector.sum())
     if not isclose(total, 1.0, rel_tol=0.0, abs_tol=tolerance):
         raise MarkovValidationError(
-            f"Initial distribution for strategy '{strategy.strategy_id}' sums to {total:.12g}, not 1."
+            f"Initial distribution for strategy '{strategy.strategy_id}' sums to {total:.12g}, not 1. "
+            "Parameter-linked allocations should use coherent direct/complement values or a jointly constrained probability set."
         )
     return vector
 
@@ -407,7 +434,7 @@ def validate_cohort_markov(
 
     state_index = {state_id: index for index, state_id in enumerate(state_ids)}
     for strategy in model.strategies:
-        _initial_vector(strategy, state_index, model.probability_tolerance)
+        _initial_vector(strategy, state_index, model.probability_tolerance, resolver)
         matrix = _transition_matrix(model, strategy, resolver, state_index)
         structural_pairs = {
             (item.origin_state, item.destination_state) for item in strategy.transitions
@@ -481,7 +508,7 @@ def run_cohort_markov(
     results: list[MarkovStrategyResult] = []
     for strategy in model.strategies:
         matrix = _transition_matrix(model, strategy, resolver, state_index)
-        occupancy = _initial_vector(strategy, state_index, model.probability_tolerance)
+        occupancy = _initial_vector(strategy, state_index, model.probability_tolerance, resolver)
         trace: list[tuple[float, ...]] = [tuple(float(value) for value in occupancy)]
         cycle_costs: list[float] = []
         cycle_outcomes: list[float] = []
