@@ -26,9 +26,10 @@ pages = {
         st.Page("pages/7_BIA_Clinical_Linkage.py", title="Clinical model → BIA linkage", icon="🔗"),
         st.Page("pages/8_Resource_Capacity_Planning.py", title="Resource & Capacity Planning", icon="🏥"),
     ],
-    "Review & reproducibility": [
-        st.Page("pages/4_State_Transition_Save_Load_Audit.py", title="Save / Load / Audit", icon="💾"),
+    "Interpretation & review": [
+        st.Page("pages/9_Policy_Interpretation.py", title="Policy Interpretation", icon="🧾"),
         st.Page("pages/5_Transparency_Check.py", title="Transparency Check", icon="🔎"),
+        st.Page("pages/4_State_Transition_Save_Load_Audit.py", title="Save / Load / Audit", icon="💾"),
     ],
 }
 
