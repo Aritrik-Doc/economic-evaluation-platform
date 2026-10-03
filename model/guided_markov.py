@@ -1,10 +1,4 @@
-"""Pure helpers for guided Markov/state-transition structure editing.
-
-The Streamlit builders use friendly forms and selectors, but the analytical
-engines still consume row-oriented tables. These helpers keep those tables
-consistent when users add/delete states, strategies, cohort allocations and
-transitions.
-"""
+"""Pure helpers for guided Markov/state-transition structure editing."""
 
 from __future__ import annotations
 
@@ -225,6 +219,8 @@ def set_initial_distribution(
                     "strategy_id": strategy_id,
                     "state_id": state_id,
                     "proportion": proportion,
+                    "proportion_mode": "fixed",
+                    "proportion_parameter_id": "",
                 }
             )
     return rows
@@ -289,10 +285,13 @@ def add_dynamic_transition(
     start_time: float,
     end_time: float | None,
     probability_mode: str = "direct",
+    source_interval_years: float | None = None,
 ) -> list[dict[str, Any]]:
     representation = input_type.strip().lower()
-    if representation not in {"probability", "rate"}:
-        raise GuidedMarkovError("Input type must be probability or rate.")
+    if representation not in {"probability", "rate", "probability_to_rate"}:
+        raise GuidedMarkovError(
+            "Input type must be probability, rate or probability_to_rate."
+        )
     basis = time_basis.strip().lower()
     if basis not in {"model_time", "state_time"}:
         raise GuidedMarkovError("Time basis must be model_time or state_time.")
@@ -304,10 +303,19 @@ def add_dynamic_transition(
         if not isfinite(float(end_time)) or float(end_time) <= float(start_time):
             raise GuidedMarkovError("Schedule end time must be greater than its start time.")
     mode = probability_mode.strip().lower()
-    if representation == "rate":
+    if representation in {"rate", "probability_to_rate"}:
         mode = "direct"
     elif mode not in {"direct", "complement"}:
         raise GuidedMarkovError("Probability schedules support direct or complement mode.")
+
+    if representation == "probability_to_rate":
+        if source_interval_years is None or not isfinite(float(source_interval_years)) or float(source_interval_years) <= 0:
+            raise GuidedMarkovError(
+                "Probability-to-rate conversion requires the interval over which the probability was measured."
+            )
+        interval = float(source_interval_years)
+    else:
+        interval = None
 
     rows = [dict(row) for row in transitions]
     rows.append(
@@ -321,6 +329,7 @@ def add_dynamic_transition(
             "start_time": float(start_time),
             "end_time": None if end_time is None else float(end_time),
             "parameter_id": parameter_id.strip(),
+            "source_interval_years": interval,
         }
     )
     return rows
