@@ -24,6 +24,7 @@ pages = {
         st.Page("pages/3_Advanced_Markov_Dynamics.py", title="Advanced Markov Dynamics", icon="🧭"),
         st.Page("pages/6_Budget_Impact_Analysis.py", title="Budget Impact Analysis", icon="💰"),
         st.Page("pages/7_BIA_Clinical_Linkage.py", title="Clinical model → BIA linkage", icon="🔗"),
+        st.Page("pages/8_Resource_Capacity_Planning.py", title="Resource & Capacity Planning", icon="🏥"),
     ],
     "Review & reproducibility": [
         st.Page("pages/4_State_Transition_Save_Load_Audit.py", title="Save / Load / Audit", icon="💾"),
