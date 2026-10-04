@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from model.capacity_reproducibility import capacity_result_is_current
 from ui.design_system import apply_design_system
 
 
@@ -13,6 +14,23 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Capacity results may depend on shared population inputs and/or a clinical model
+# edited on another page. Invalidate the stored result before any page can consume
+# it when those substantive upstream inputs no longer match the validated run.
+if "rc_last_result" in st.session_state:
+    if not capacity_result_is_current(
+        dict(st.session_state),
+        st.session_state.get("rc_last_context"),
+        st.session_state.get("rc_last_fingerprint"),
+    ):
+        for key in (
+            "rc_last_result",
+            "rc_last_definition",
+            "rc_last_context",
+            "rc_last_fingerprint",
+        ):
+            st.session_state.pop(key, None)
 
 pages = {
     "Start": [
