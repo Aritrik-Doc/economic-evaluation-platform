@@ -60,6 +60,52 @@ def _init_state() -> None:
     st.session_state.setdefault("pu_future_mix_rationale", "Future uptake should reflect access, implementation and expected substitution.")
 
 
+def _copy_to_bia(definition: PopulationUptakeDefinition) -> None:
+    """Copy the current shared scenario into BIA as an explicit editable snapshot."""
+    horizon = len(definition.population)
+    st.session_state["bia_profile"] = "CUSTOM"
+    st.session_state["bia_horizon_custom"] = horizon
+    st.session_state["bia_population_mode"] = "Direct annual eligible population"
+    st.session_state["bia_interventions"] = [
+        {"id": option.id, "name": option.name} for option in definition.options
+    ]
+
+    existing_costs = dict(st.session_state.get("bia_cost_inputs", {}))
+    copied_costs = {}
+    for option in definition.options:
+        copied_costs[option.id] = dict(
+            existing_costs.get(
+                option.id,
+                {
+                    "acquisition": 0.0,
+                    "administration": 0.0,
+                    "monitoring": 0.0,
+                    "adverse_events": 0.0,
+                    "disease_management": 0.0,
+                    "other": 0.0,
+                    "annual_change": 0.0,
+                    "source": "",
+                    "rationale": "",
+                },
+            )
+        )
+    st.session_state["bia_cost_inputs"] = copied_costs
+
+    for index, row in enumerate(definition.population):
+        st.session_state[f"bia_eligible_{horizon}_{index}"] = float(row.eligible_population)
+        st.session_state[f"bia_covered_{horizon}_{index}"] = float(row.covered_lives or 0.0)
+    for row in definition.treatment_mix:
+        st.session_state[f"bia_share_{row.scenario}_{row.year}_{row.intervention_id}"] = float(row.share)
+
+    st.session_state["bia_population_source"] = st.session_state.pu_population_source
+    st.session_state["bia_population_rationale"] = st.session_state.pu_population_rationale
+    st.session_state["bia_current_mix_source"] = st.session_state.pu_current_mix_source
+    st.session_state["bia_current_mix_rationale"] = st.session_state.pu_current_mix_rationale
+    st.session_state["bia_future_mix_source"] = st.session_state.pu_future_mix_source
+    st.session_state["bia_future_mix_rationale"] = st.session_state.pu_future_mix_rationale
+    st.session_state["bia_population_uptake_snapshot_basis"] = definition.population_basis
+
+
 _init_state()
 
 methods_tab, population_tab, uptake_tab, review_tab = st.tabs(
@@ -169,7 +215,6 @@ with population_tab:
 with uptake_tab:
     st.subheader("Current and future option mix")
     options = [PopulationOption(str(row["id"]), str(row["name"])) for row in st.session_state.pu_options]
-    option_ids = [item.id for item in options]
     mix_rows = []
     for year in range(1, horizon + 1):
         with st.expander(f"Year {year}", expanded=year == 1):
@@ -256,9 +301,12 @@ with review_tab:
             hide_index=True,
             column_config={"Share": st.column_config.NumberColumn(format="%.1%")},
         )
-        st.info("This population scenario contains no costs and no clinical outcomes. It can be reused independently by affordability and implementation analyses.")
+        st.info("This population scenario contains no costs and no clinical outcomes. Capacity can consume it directly. Budget Impact Analysis currently receives an explicit editable snapshot so later BIA edits cannot silently change the shared scenario.")
+        if st.button("Copy this population & uptake snapshot into BIA", type="primary", key="pu_copy_to_bia"):
+            _copy_to_bia(compiled)
+            st.success("Copied to Budget Impact Analysis as a Custom-profile snapshot. Cost inputs remain separate and must be completed in the BIA workspace.")
         c1, c2 = st.columns(2)
         with c1:
-            st.page_link("pages/6_Budget_Impact_Analysis.py", label="Use with Budget Impact Analysis →", icon="💷")
+            st.page_link("pages/6_Budget_Impact_Analysis.py", label="Open Budget Impact Analysis →", icon="💷")
         with c2:
-            st.page_link("pages/8_Resource_Capacity_Planning.py", label="Use with Resource & Capacity Planning →", icon="🏥")
+            st.page_link("pages/8_Resource_Capacity_Planning.py", label="Use directly in Resource & Capacity Planning →", icon="🏥")
