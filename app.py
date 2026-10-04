@@ -22,6 +22,7 @@ pages = {
         st.Page("pages/1_Decision_Tree_Builder.py", title="Decision Tree Modeller", icon="🌿"),
         st.Page("pages/2_Cohort_Markov_Builder.py", title="Cohort Markov Modeller", icon="🔁"),
         st.Page("pages/3_Advanced_Markov_Dynamics.py", title="Advanced Markov Dynamics", icon="🧭"),
+        st.Page("pages/10_Population_Uptake.py", title="Population & Uptake", icon="👥"),
         st.Page("pages/6_Budget_Impact_Analysis.py", title="Budget Impact Analysis", icon="💰"),
         st.Page("pages/7_BIA_Clinical_Linkage.py", title="Clinical model → BIA linkage", icon="🔗"),
         st.Page("pages/8_Resource_Capacity_Planning.py", title="Resource & Capacity Planning", icon="🏥"),
