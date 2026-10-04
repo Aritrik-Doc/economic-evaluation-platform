@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from model.capacity_reproducibility import capacity_result_is_current
 from ui.design_system import apply_design_system
 
 
@@ -14,6 +15,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Capacity results may depend on shared population inputs and/or a clinical model
+# edited on another page. Invalidate the stored result before any page can consume
+# it when those substantive upstream inputs no longer match the validated run.
+if "rc_last_result" in st.session_state:
+    if not capacity_result_is_current(
+        dict(st.session_state),
+        st.session_state.get("rc_last_context"),
+        st.session_state.get("rc_last_fingerprint"),
+    ):
+        for key in (
+            "rc_last_result",
+            "rc_last_definition",
+            "rc_last_context",
+            "rc_last_fingerprint",
+        ):
+            st.session_state.pop(key, None)
+
 pages = {
     "Start": [
         st.Page("pages/0_Home.py", title="Home", icon="🏠", default=True),
@@ -22,6 +40,7 @@ pages = {
         st.Page("pages/1_Decision_Tree_Builder.py", title="Decision Tree Modeller", icon="🌿"),
         st.Page("pages/2_Cohort_Markov_Builder.py", title="Cohort Markov Modeller", icon="🔁"),
         st.Page("pages/3_Advanced_Markov_Dynamics.py", title="Advanced Markov Dynamics", icon="🧭"),
+        st.Page("pages/10_Population_Uptake.py", title="Population & Uptake", icon="👥"),
         st.Page("pages/6_Budget_Impact_Analysis.py", title="Budget Impact Analysis", icon="💰"),
         st.Page("pages/7_BIA_Clinical_Linkage.py", title="Clinical model → BIA linkage", icon="🔗"),
         st.Page("pages/8_Resource_Capacity_Planning.py", title="Resource & Capacity Planning", icon="🏥"),

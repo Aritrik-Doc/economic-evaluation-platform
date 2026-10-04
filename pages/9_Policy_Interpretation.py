@@ -28,13 +28,6 @@ from model.policy_interpretation import (
     interpret_cost_effectiveness,
 )
 from model.reference_cases import REFERENCE_CASES
-from model.resource_capacity import (
-    AnnualResourceCapacity,
-    ResourceCapacityDefinition,
-    ResourceDefinition,
-    ResourceRequirement,
-    run_resource_capacity_plan,
-)
 from model.semi_markov import run_semi_markov
 from model.semi_markov_builder import compile_semi_markov_tables
 from model.tree_builder import compile_builder_tables
@@ -44,7 +37,7 @@ from ui.policy_interpretation import render_combined_headlines, render_policy_in
 
 st.set_page_config(page_title="Policy Interpretation", page_icon="🧾", layout="wide")
 st.title("Policy Interpretation")
-st.caption("Version 0.12 — deterministic translation of value, affordability and implementation outputs")
+st.caption("Version 0.14 — deterministic translation of value, affordability and implementation outputs")
 
 coloured_block(
     "Translate results without replacing judgement",
@@ -130,7 +123,9 @@ def _markov_interpretation() -> PolicyInterpretation:
         depletion_threshold=float(st.session_state.get("mk_depletion", 0.0001)),
     )
     bearers = tuple(
-        item.strip() for item in str(st.session_state.get("mk_cost_bearers", "health_system")).split(",") if item.strip()
+        item.strip()
+        for item in str(st.session_state.get("mk_cost_bearers", "health_system")).split(",")
+        if item.strip()
     )
     run = run_cohort_markov(
         compiled.model,
@@ -177,7 +172,9 @@ def _advanced_interpretation() -> PolicyInterpretation:
         depletion_threshold=float(st.session_state.get("adv_depletion", 0.0001)),
     )
     bearers = tuple(
-        item.strip() for item in str(st.session_state.get("adv_cost_bearers", "health_system")).split(",") if item.strip()
+        item.strip()
+        for item in str(st.session_state.get("adv_cost_bearers", "health_system")).split(",")
+        if item.strip()
     )
     run = run_semi_markov(
         compiled.model,
@@ -213,14 +210,22 @@ def _bia_definition():
         horizon = int(st.session_state.get(f"bia_horizon_{profile.code}", profile.default_horizon_years))
         currency_code = st.session_state.get("bia_currency_profile", profile.default_currency)
 
-    interventions = tuple(BudgetIntervention(str(row["id"]), str(row["name"])) for row in raw_interventions)
+    interventions = tuple(
+        BudgetIntervention(str(row["id"]), str(row["name"])) for row in raw_interventions
+    )
     population = []
     for index in range(horizon):
         eligible_key = f"bia_eligible_{horizon}_{index}"
         if eligible_key not in st.session_state:
             raise ValueError("Complete the annual BIA population inputs before interpretation.")
         covered = float(st.session_state.get(f"bia_covered_{horizon}_{index}", 0.0) or 0.0)
-        population.append(PopulationYear(index + 1, float(st.session_state[eligible_key]), covered if covered > 0 else None))
+        population.append(
+            PopulationYear(
+                index + 1,
+                float(st.session_state[eligible_key]),
+                covered if covered > 0 else None,
+            )
+        )
 
     mix = []
     for year in range(1, horizon + 1):
@@ -229,7 +234,14 @@ def _bia_definition():
                 key = f"bia_share_{scenario}_{year}_{intervention.id}"
                 if key not in st.session_state:
                     raise ValueError("Complete the BIA current and future treatment mix before interpretation.")
-                mix.append(TreatmentMixShare(scenario, year, intervention.id, float(st.session_state[key])))
+                mix.append(
+                    TreatmentMixShare(
+                        scenario,
+                        year,
+                        intervention.id,
+                        float(st.session_state[key]),
+                    )
+                )
 
     costs = []
     cost_inputs = st.session_state.get("bia_cost_inputs", {})
@@ -242,7 +254,13 @@ def _bia_definition():
                 costs.append(AnnualCostInput(intervention.id, year, category, value))
     included = tuple(st.session_state.get("bia_included_categories", list(COST_CATEGORIES)))
     return (
-        BudgetImpactDefinition(interventions, tuple(population), tuple(mix), tuple(costs), included),
+        BudgetImpactDefinition(
+            interventions,
+            tuple(population),
+            tuple(mix),
+            tuple(costs),
+            included,
+        ),
         currency_code,
         horizon,
     )
@@ -259,63 +277,38 @@ def _bia_interpretation() -> PolicyInterpretation:
         "disease_management": "Condition-related care",
         "other": "Other budgeted cost / credit",
     }
-    return interpret_budget_impact(result, currency_symbol=CURRENCIES[currency_code].symbol, category_labels=labels)
+    return interpret_budget_impact(
+        result,
+        currency_symbol=CURRENCIES[currency_code].symbol,
+        category_labels=labels,
+    )
 
 
 def _capacity_interpretation() -> PolicyInterpretation:
-    bia, _, horizon = _bia_definition()
-    raw_resources = st.session_state.get("rc_resources")
-    if not raw_resources:
-        raise ValueError("Configure Resource & Capacity Planning first.")
-    resources = tuple(
-        ResourceDefinition(str(row["id"]), str(row["name"]), str(row["unit"]), str(row.get("category", "other")))
-        for row in raw_resources
-    )
-    basis_label = st.session_state.get("rc_basis_label", "Annual treated population")
-    demand_basis = "annual_treated_population" if basis_label == "Annual treated population" else "new_treatment_starts"
-    requirements = []
-    for intervention in bia.interventions:
-        for resource in resources:
-            for period in range(1, horizon + 1):
-                key = f"rc_req_{demand_basis}_{intervention.id}_{resource.id}_{period}"
-                value = float(st.session_state.get(key, 0.0) or 0.0)
-                if value > 0:
-                    requirements.append(ResourceRequirement(intervention.id, resource.id, period, value))
-    capacities = []
-    for resource in resources:
-        for year in range(1, horizon + 1):
-            total_key = f"rc_capacity_total_{resource.id}_{year}"
-            committed_key = f"rc_capacity_committed_{resource.id}_{year}"
-            if total_key not in st.session_state:
-                raise ValueError("Complete annual capacity inputs before interpretation.")
-            capacities.append(
-                AnnualResourceCapacity(
-                    resource.id,
-                    year,
-                    float(st.session_state[total_key]),
-                    float(st.session_state.get(committed_key, 0.0) or 0.0),
-                )
-            )
-    result = run_resource_capacity_plan(
-        ResourceCapacityDefinition(
-            interventions=bia.interventions,
-            population=bia.population,
-            treatment_mix=bia.treatment_mix,
-            resources=resources,
-            requirements=tuple(requirements),
-            capacities=tuple(capacities),
-            demand_basis=demand_basis,
+    result = st.session_state.get("rc_last_result")
+    if result is None:
+        raise ValueError(
+            "Open Resource & Capacity Planning and complete a valid capacity analysis first. "
+            "Feasibility interpretation uses the validated capacity result rather than reconstructing it from BIA."
         )
-    )
     return interpret_capacity(result)
 
 
 cea_sources = []
-if all(key in st.session_state for key in ("dt_parameter_rows", "dt_strategy_rows", "dt_node_rows", "dt_branch_rows")):
+if all(
+    key in st.session_state
+    for key in ("dt_parameter_rows", "dt_strategy_rows", "dt_node_rows", "dt_branch_rows")
+):
     cea_sources.append("Decision Tree")
-if all(key in st.session_state for key in ("markov_parameters", "markov_states", "markov_strategies")):
+if all(
+    key in st.session_state
+    for key in ("markov_parameters", "markov_states", "markov_strategies")
+):
     cea_sources.append("Cohort Markov")
-if all(key in st.session_state for key in ("adv_parameters", "adv_states", "adv_strategies")):
+if all(
+    key in st.session_state
+    for key in ("adv_parameters", "adv_states", "adv_strategies")
+):
     cea_sources.append("Advanced Markov")
 
 value_interpretation = None
@@ -324,7 +317,11 @@ feasibility_interpretation = None
 errors = {}
 
 if cea_sources:
-    selected_source = st.selectbox("Clinical/economic model to interpret", cea_sources, key="policy_cea_source")
+    selected_source = st.selectbox(
+        "Clinical/economic model to interpret",
+        cea_sources,
+        key="policy_cea_source",
+    )
     try:
         value_interpretation = {
             "Decision Tree": _decision_tree_interpretation,
@@ -334,7 +331,9 @@ if cea_sources:
     except Exception as exc:
         errors["Value for money"] = str(exc)
 else:
-    errors["Value for money"] = "No configured Decision Tree or Markov model is available in this session."
+    errors["Value for money"] = (
+        "No configured Decision Tree or Markov model is available in this session."
+    )
 
 try:
     affordability_interpretation = _bia_interpretation()
@@ -347,18 +346,43 @@ except Exception as exc:
     errors["Implementation feasibility"] = str(exc)
 
 available = tuple(
-    item for item in (value_interpretation, affordability_interpretation, feasibility_interpretation) if item is not None
+    item
+    for item in (
+        value_interpretation,
+        affordability_interpretation,
+        feasibility_interpretation,
+    )
+    if item is not None
 )
 status_bar(
     [
-        ("Value: available" if value_interpretation else "Value: not available", "green" if value_interpretation else "neutral"),
-        ("Affordability: available" if affordability_interpretation else "Affordability: not available", "green" if affordability_interpretation else "neutral"),
-        ("Feasibility: available" if feasibility_interpretation else "Feasibility: not available", "green" if feasibility_interpretation else "neutral"),
+        (
+            "Value: available" if value_interpretation else "Value: not available",
+            "green" if value_interpretation else "neutral",
+        ),
+        (
+            "Affordability: available"
+            if affordability_interpretation
+            else "Affordability: not available",
+            "green" if affordability_interpretation else "neutral",
+        ),
+        (
+            "Feasibility: available"
+            if feasibility_interpretation
+            else "Feasibility: not available",
+            "green" if feasibility_interpretation else "neutral",
+        ),
     ]
 )
 
 summary_tab, value_tab, affordability_tab, feasibility_tab, methods_tab = st.tabs(
-    ["Executive summary", "Value", "Affordability", "Feasibility", "Interpretation rules"]
+    [
+        "Executive summary",
+        "Value",
+        "Affordability",
+        "Feasibility",
+        "Interpretation rules",
+    ]
 )
 
 with summary_tab:
@@ -396,9 +420,25 @@ with affordability_tab:
 with feasibility_tab:
     if feasibility_interpretation:
         render_policy_interpretation(feasibility_interpretation)
+        context = st.session_state.get("rc_last_context") or {}
+        if context:
+            st.caption(
+                "Capacity result source: "
+                + str(context.get("population_source_label") or context.get("population_source") or "capacity workspace")
+                + " · Resource requirements: "
+                + str(context.get("requirement_source") or "configured in capacity workspace")
+            )
     else:
-        st.info(errors.get("Implementation feasibility", "Feasibility interpretation is not available."))
-        st.page_link("pages/8_Resource_Capacity_Planning.py", label="Open Resource & Capacity Planning →")
+        st.info(
+            errors.get(
+                "Implementation feasibility",
+                "Feasibility interpretation is not available.",
+            )
+        )
+        st.page_link(
+            "pages/8_Resource_Capacity_Planning.py",
+            label="Open Resource & Capacity Planning →",
+        )
 
 with methods_tab:
     st.subheader("How the interpretation is generated")
@@ -408,7 +448,7 @@ with methods_tab:
     st.markdown(
         "**Value:** threshold-specific NMB, efficient-frontier position, incremental cost/effect and ICER.  \n"
         "**Affordability:** annual and cumulative budget impact, PMPM where available, and the largest cost-category change.  \n"
-        "**Feasibility:** resource demand, residual capacity, utilisation, headroom and shortfall."
+        "**Feasibility:** the most recently validated resource/capacity result, including demand, residual capacity, utilisation, headroom and shortfall. Feasibility no longer requires a BIA to exist."
     )
     st.write(
         "Each detailed statement displays its analytical basis. The language deliberately distinguishes calculated findings from policy judgements, and the three domains are not collapsed into a single score."
