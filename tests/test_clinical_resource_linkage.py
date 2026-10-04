@@ -9,7 +9,13 @@ from model.clinical_resource_linkage import (
     project_markov_resource_profiles,
 )
 from model.decision_tree import ChanceNode, DecisionTreeDefinition, StrategyRoot, TerminalNode, TreeBranch
-from model.markov import CohortMarkovDefinition, InitialStateAllocation, MarkovState, MarkovStrategyDefinition
+from model.markov import (
+    CohortMarkovDefinition,
+    InitialStateAllocation,
+    MarkovState,
+    MarkovStrategyDefinition,
+    TransitionProbability,
+)
 from model.resource_capacity import ResourceRequirement
 from model.schema import AssumptionSpec, EvidenceSource, Parameter, UncertaintySpec
 
@@ -53,6 +59,37 @@ def test_markov_state_resource_profile_uses_state_occupancy_and_selected_cycle()
     by_strategy = {profile.strategy_id: profile for profile in profiles}
     assert by_strategy["A"].annual_units_per_patient == pytest.approx((4.0, 4.0))
     assert by_strategy["B"].annual_units_per_patient == pytest.approx((0.0, 0.0))
+
+
+def test_cohort_depletion_stops_linked_resource_accrual_without_trace_index_error():
+    states = (MarkovState("alive", "Alive"), MarkovState("dead", "Dead", absorbing=True))
+    transition = (TransitionProbability("alive", "dead", "p_die", "direct"),)
+    strategies = (
+        MarkovStrategyDefinition("A", "A", (InitialStateAllocation("alive", 1.0),), transition),
+        MarkovStrategyDefinition("B", "B", (InitialStateAllocation("alive", 1.0),), transition),
+    )
+    model = CohortMarkovDefinition(
+        states=states,
+        strategies=strategies,
+        cycle_length_years=1.0,
+        max_cycles=3,
+        state_accrual_timing="start",
+        termination_mode="cohort_depletion",
+        depletion_threshold=0.01,
+    )
+    parameters = (_parameter("p_die", 1.0, "clinical"), _parameter("staff_hours", 4.0))
+    mappings = tuple(
+        StateResourceMapping(strategy_id, "alive", "staff", "staff_hours", "per_year")
+        for strategy_id in ("A", "B")
+    )
+    profiles = project_markov_resource_profiles(
+        model,
+        parameters,
+        mappings=mappings,
+        horizon_years=3,
+    )
+    for profile in profiles:
+        assert profile.annual_units_per_patient == pytest.approx((4.0, 0.0, 0.0))
 
 
 def test_decision_tree_resource_profile_is_probability_weighted_and_timed():
