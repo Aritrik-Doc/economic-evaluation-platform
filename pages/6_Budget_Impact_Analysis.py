@@ -1,8 +1,6 @@
-"""Guided Budget Impact Analysis workspace for Economic Evaluation Platform v0.9."""
+"""Guided Budget Impact Analysis workspace."""
 
 from __future__ import annotations
-
-import io
 
 import pandas as pd
 import plotly.express as px
@@ -19,23 +17,31 @@ from model.budget_impact import (
     apply_simple_scenario,
     compound_series,
     run_budget_impact,
-    top_down_eligible_population,
 )
 from model.budget_impact_profiles import BUDGET_IMPACT_PROFILES
 from model.currency import CURRENCIES
-from ui.design_system import card, coloured_block, status_bar
+from model.population_projection import project_direct_population, project_top_down_population
+from ui.design_system import coloured_block, status_bar
 
 
 st.set_page_config(page_title="Budget Impact Analysis", page_icon="💷", layout="wide")
 st.title("Budget Impact Analysis")
-st.caption("Version 0.9 — population-level affordability and resource-impact analysis")
+st.caption("Version 0.15 — population-level affordability with validated cross-page handoffs")
 
 coloured_block(
     "Affordability complements value for money",
-    "Budget impact analysis estimates the financial consequences of changing the treatment mix for a defined budget holder and eligible population. It should be interpreted alongside—not as a substitute for—cost-effectiveness evidence.",
+    "Budget impact analysis estimates the financial consequences of changing the treatment mix for a defined budget holder and eligible population. It should be interpreted alongside—not as a substitute for—cost-effectiveness and implementation evidence.",
     tone="teal",
     kicker="Budget holder perspective",
 )
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.page_link("pages/10_Population_Uptake.py", label="Population & Uptake", icon="👥")
+with c2:
+    st.page_link("pages/7_BIA_Clinical_Linkage.py", label="Clinical model → BIA linkage", icon="🔗")
+with c3:
+    st.page_link("pages/8_Resource_Capacity_Planning.py", label="Resource & Capacity Planning", icon="🏥")
 
 
 CATEGORY_LABELS = {
@@ -101,6 +107,8 @@ def _init_state() -> None:
     st.session_state.setdefault("bia_current_mix_rationale", "Current mix should reflect actual routine care for the budget holder.")
     st.session_state.setdefault("bia_future_mix_source", "Illustrative uptake assumption — replace with forecast evidence")
     st.session_state.setdefault("bia_future_mix_rationale", "Future uptake should reflect access restrictions, implementation and expected substitution.")
+    st.session_state.setdefault("bia_population_entry_mode", "Use formula-derived annual values")
+    st.session_state.setdefault("bia_context_valid", False)
 
 
 _init_state()
@@ -162,7 +170,7 @@ with methods_tab:
         )
 
     st.info(
-        "The v0.9 BIA engine reports period-by-period financial consequences and does not discount annual budget flows. If a jurisdiction requires a discounted presentation, that should be shown as an additional local-practice view rather than silently replacing annual cash-flow results."
+        "The BIA engine reports period-by-period financial consequences and does not discount annual budget flows. If a jurisdiction requires a discounted presentation, show that as an additional local-practice view rather than silently replacing annual cash-flow results."
     )
     included_categories = st.multiselect(
         "Cost categories included in this analysis",
@@ -177,6 +185,9 @@ with methods_tab:
 
 with population_tab:
     st.subheader("Eligible population over time")
+    st.caption(
+        "If the same population/uptake assumptions will also be used for capacity planning, you can define them in Population & Uptake and copy a validated snapshot into BIA."
+    )
     population_mode = st.radio(
         "How would you like to estimate the population?",
         ["Top-down funnel", "Direct annual eligible population"],
@@ -184,54 +195,117 @@ with population_tab:
         key="bia_population_mode",
     )
 
-    covered_series: tuple[float, ...] | None = None
     if population_mode == "Top-down funnel":
+        with st.expander("What each population input changes", expanded=True):
+            st.markdown(
+                "**Eligible population = covered/catchment population × prevalence × diagnosed/identified × clinically eligible × access/coverage.**\n\n"
+                "- **Covered / catchment population:** people served by the payer, programme or service.\n"
+                "- **Prevalence / target-condition proportion:** share with the condition or policy-relevant characteristic.\n"
+                "- **Diagnosed / identified:** share of affected people known to the system.\n"
+                "- **Clinically eligible:** share meeting the intervention criteria.\n"
+                "- **Access / coverage:** share expected to reach or be covered by the service.\n"
+                "- **Annual covered/catchment growth:** changes the starting population in later years; the same funnel is then applied each year."
+            )
         c1, c2, c3 = st.columns(3)
-        covered_start = c1.number_input("Covered / catchment population — Year 1", min_value=0.0, value=1_000_000.0, step=10_000.0)
-        prevalence = c2.number_input("Prevalence / target-condition proportion", min_value=0.0, max_value=1.0, value=0.01, format="%.6f")
-        diagnosed = c3.number_input("Diagnosed / identified proportion", min_value=0.0, max_value=1.0, value=0.80, format="%.4f")
+        covered_start = c1.number_input("Covered / catchment population — Year 1", min_value=0.0, value=1_000_000.0, step=10_000.0, key="bia_formula_covered_start")
+        prevalence = c2.number_input("Prevalence / target-condition proportion", min_value=0.0, max_value=1.0, value=0.01, format="%.6f", key="bia_formula_prevalence")
+        diagnosed = c3.number_input("Diagnosed / identified proportion", min_value=0.0, max_value=1.0, value=0.80, format="%.4f", key="bia_formula_diagnosed")
         c1, c2, c3 = st.columns(3)
-        eligible = c1.number_input("Clinically eligible proportion", min_value=0.0, max_value=1.0, value=0.75, format="%.4f")
-        access = c2.number_input("Access / covered proportion", min_value=0.0, max_value=1.0, value=0.90, format="%.4f")
-        population_growth = c3.number_input("Annual covered-population growth", value=0.01, format="%.4f")
-        covered_series = compound_series(covered_start, population_growth, horizon_years)
-        derived = tuple(
-            top_down_eligible_population(value, prevalence, diagnosed, eligible, access)
-            for value in covered_series
+        eligible = c1.number_input("Clinically eligible proportion", min_value=0.0, max_value=1.0, value=0.75, format="%.4f", key="bia_formula_eligible")
+        access = c2.number_input("Access / covered proportion", min_value=0.0, max_value=1.0, value=0.90, format="%.4f", key="bia_formula_access")
+        population_growth_pct = c3.number_input("Annual covered/catchment growth (%)", value=1.0, format="%.3f", key="bia_formula_covered_growth_pct")
+        projection = project_top_down_population(
+            covered_or_catchment_start=covered_start,
+            covered_or_catchment_growth_rate=population_growth_pct / 100.0,
+            prevalence=prevalence,
+            diagnosed_or_identified=diagnosed,
+            clinically_eligible=eligible,
+            access_or_coverage=access,
+            horizon_years=horizon_years,
         )
     else:
-        c1, c2, c3 = st.columns(3)
-        eligible_start = c1.number_input("Eligible population — Year 1", min_value=0.0, value=10_000.0, step=100.0)
-        eligible_growth = c2.number_input("Annual eligible-population growth", value=0.02, format="%.4f")
-        covered_start = c3.number_input("Covered lives — Year 1 (0 = not supplied)", min_value=0.0, value=0.0, step=1000.0)
-        derived = compound_series(eligible_start, eligible_growth, horizon_years)
-        covered_series = None if covered_start <= 0 else compound_series(covered_start, eligible_growth, horizon_years)
-
-    st.caption("Review or override the annual values below. Annual population inputs make entry/exit and growth explicit rather than assuming a permanently closed cohort.")
-    population_rows: list[PopulationYear] = []
-    for index in range(horizon_years):
-        c1, c2 = st.columns(2)
-        eligible_value = c1.number_input(
-            f"Year {index + 1} eligible population",
-            min_value=0.0,
-            value=float(derived[index]),
-            step=max(float(derived[index]) * 0.01, 1.0),
-            key=f"bia_eligible_{horizon_years}_{index}",
-        )
-        covered_default = float(covered_series[index]) if covered_series is not None else 0.0
-        covered_value = c2.number_input(
-            f"Year {index + 1} covered lives (0 = not supplied)",
-            min_value=0.0,
-            value=covered_default,
-            step=max(covered_default * 0.01, 100.0) if covered_default else 1000.0,
-            key=f"bia_covered_{horizon_years}_{index}",
-        )
-        try:
-            population_rows.append(
-                PopulationYear(index + 1, eligible_value, covered_value if covered_value > 0 else None)
+        with st.expander("What each population input changes", expanded=True):
+            st.markdown(
+                "- **Eligible population — Year 1:** number of people relevant to the budget decision in the first year.\n"
+                "- **Eligible-population growth:** changes that eligible population in later years. A value of 2% gives Year 2 = Year 1 × 1.02.\n"
+                "- **Covered lives:** optional denominator used for PMPM. It does **not** change eligible population in direct mode.\n"
+                "- **Covered-lives growth:** changes only that denominator, allowing the payer population and eligible population to grow at different rates."
             )
-        except ValueError as exc:
-            st.error(f"Year {index + 1}: {exc}")
+        c1, c2 = st.columns(2)
+        eligible_start = c1.number_input("Eligible population — Year 1", min_value=0.0, value=10_000.0, step=100.0, key="bia_formula_eligible_start")
+        eligible_growth_pct = c2.number_input("Annual eligible-population growth (%)", value=2.0, format="%.3f", key="bia_formula_eligible_growth_pct")
+        c1, c2 = st.columns(2)
+        covered_start = c1.number_input("Covered lives — Year 1 (0 = not supplied)", min_value=0.0, value=0.0, step=1000.0, key="bia_formula_covered_direct")
+        covered_growth_pct = c2.number_input("Annual covered-lives growth (%)", value=0.0, format="%.3f", key="bia_formula_covered_growth_pct_direct", disabled=covered_start <= 0)
+        projection = project_direct_population(
+            eligible_start=eligible_start,
+            eligible_growth_rate=eligible_growth_pct / 100.0,
+            horizon_years=horizon_years,
+            covered_lives_start=covered_start if covered_start > 0 else None,
+            covered_lives_growth_rate=covered_growth_pct / 100.0,
+        )
+
+    projection_df = pd.DataFrame(
+        [
+            {
+                "Year": row.year,
+                "Formula-derived eligible population": row.eligible_population,
+                "Formula-derived covered lives": row.covered_lives,
+            }
+            for row in projection
+        ]
+    )
+    population_entry_mode = st.radio(
+        "How should the annual values be used?",
+        ["Use formula-derived annual values", "Edit annual values manually"],
+        horizontal=True,
+        key="bia_population_entry_mode",
+        help="Formula-derived mode always follows the current drivers above. Manual mode preserves year-specific overrides until you edit or reset them.",
+    )
+
+    population_rows: list[PopulationYear] = []
+    if population_entry_mode == "Use formula-derived annual values":
+        st.success("Live projection: changes to the population drivers above immediately update the annual values used in the BIA result and downstream validated handoffs.")
+        st.dataframe(projection_df, use_container_width=True, hide_index=True)
+        for row in projection:
+            try:
+                population_rows.append(PopulationYear(row.year, row.eligible_population, row.covered_lives))
+            except ValueError as exc:
+                st.error(f"Year {row.year}: {exc}")
+    else:
+        snapshot_basis = st.session_state.get("bia_population_uptake_snapshot_basis")
+        if snapshot_basis:
+            basis_text = "new treatment starts" if snapshot_basis == "new_treatment_starts" else "annual eligible / treated population"
+            st.info(f"This BIA received a Population & Uptake snapshot whose declared population basis is **{basis_text}**. The annual values remain editable here as a separate BIA snapshot.")
+        st.warning("Manual override is active. Formula changes update the preview but do not overwrite the year-specific BIA values unless you reset them.")
+        st.dataframe(projection_df, use_container_width=True, hide_index=True)
+        if st.button("Reset manual annual BIA values from the current formula", key="bia_reset_manual_population"):
+            for index, row in enumerate(projection):
+                st.session_state[f"bia_eligible_{horizon_years}_{index}"] = float(row.eligible_population)
+                st.session_state[f"bia_covered_{horizon_years}_{index}"] = float(row.covered_lives or 0.0)
+            st.rerun()
+        for index, row in enumerate(projection):
+            eligible_key = f"bia_eligible_{horizon_years}_{index}"
+            covered_key = f"bia_covered_{horizon_years}_{index}"
+            st.session_state.setdefault(eligible_key, float(row.eligible_population))
+            st.session_state.setdefault(covered_key, float(row.covered_lives or 0.0))
+            c1, c2 = st.columns(2)
+            eligible_value = c1.number_input(
+                f"Year {index + 1} eligible population",
+                min_value=0.0,
+                step=max(float(row.eligible_population) * 0.01, 1.0),
+                key=eligible_key,
+            )
+            covered_value = c2.number_input(
+                f"Year {index + 1} covered lives (0 = not supplied)",
+                min_value=0.0,
+                step=max(float(row.covered_lives or 0.0) * 0.01, 100.0) if row.covered_lives else 1000.0,
+                key=covered_key,
+            )
+            try:
+                population_rows.append(PopulationYear(index + 1, eligible_value, covered_value if covered_value > 0 else None))
+            except ValueError as exc:
+                st.error(f"Year {index + 1}: {exc}")
 
     st.markdown("#### Evidence and rationale")
     st.session_state.bia_population_source = st.text_area(
@@ -274,11 +348,11 @@ with costs_tab:
             key=f"bia_cost_{selected_id}_{category}",
         )
     cost_data["annual_change"] = st.number_input(
-        "Annual price/resource-cost change",
+        "Annual price/resource-cost change (proportion)",
         value=float(cost_data.get("annual_change", 0.0)),
         format="%.4f",
         key=f"bia_cost_growth_{selected_id}",
-        help="Applied to all cost components for this intervention. Use 0 when costs are held at the stated price level.",
+        help="Applied to all cost components for this intervention. Enter 0.02 for +2% per year, -0.02 for -2%, or 0 when costs are held constant.",
     )
     cost_data["source"] = st.text_area(
         "Cost/resource evidence source",
@@ -383,7 +457,6 @@ with mix_tab:
     st.session_state.bia_future_mix_rationale = st.text_area("Future mix / substitution rationale", st.session_state.bia_future_mix_rationale)
 
 
-# Build annual cost rows after the current horizon and intervention set are known.
 interventions = tuple(BudgetIntervention(item["id"], item["name"]) for item in st.session_state.bia_interventions)
 cost_rows: list[AnnualCostInput] = []
 for intervention in interventions:
@@ -412,14 +485,36 @@ try:
         included_cost_categories=tuple(included_categories),
     )
     base_run = run_budget_impact(compiled_definition)
+    st.session_state.bia_population_rows = [
+        {
+            "year": row.year,
+            "eligible_population": row.eligible_population,
+            "covered_lives": row.covered_lives,
+        }
+        for row in compiled_definition.population
+    ]
+    st.session_state.bia_treatment_mix_rows = [
+        {
+            "scenario": row.scenario,
+            "year": row.year,
+            "intervention_id": row.intervention_id,
+            "share": row.share,
+        }
+        for row in compiled_definition.treatment_mix
+    ]
+    st.session_state.bia_context_valid = True
 except (BudgetImpactValidationError, ValueError) as exc:
     compile_error = str(exc)
+    st.session_state.bia_context_valid = False
+    st.session_state.pop("bia_population_rows", None)
+    st.session_state.pop("bia_treatment_mix_rows", None)
 
 
 with results_tab:
     st.subheader("Annual and cumulative budget impact")
     if compile_error:
         st.error(compile_error)
+        st.warning("The current BIA configuration is invalid, so clinical linkage, capacity planning and policy interpretation will not reuse an earlier valid BIA state from this session.")
     else:
         assert compiled_definition is not None and base_run is not None
         symbol = CURRENCIES[currency_code].symbol
@@ -439,6 +534,7 @@ with results_tab:
                 {
                     "Year": row.year,
                     "Eligible population": row.eligible_population,
+                    "Covered lives": row.covered_lives,
                     "Current scenario cost": row.current_cost,
                     "Future scenario cost": row.future_cost,
                     "Net budget impact": row.net_budget_impact,
