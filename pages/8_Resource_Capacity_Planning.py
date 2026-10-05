@@ -14,6 +14,29 @@ from model.capacity_reproducibility import capacity_source_fingerprint
 for key in ("rc_last_result", "rc_last_definition", "rc_last_context", "rc_last_fingerprint"):
     st.session_state.pop(key, None)
 
+# If an upstream reusable source is selected, require its current validated handoff.
+# This prevents an older valid population/BIA state from being reused after the
+# user has made the current upstream configuration invalid.
+selected_population_source = st.session_state.get("rc_population_source")
+if selected_population_source == "Shared Population & Uptake":
+    if st.session_state.get("pu_context_valid") is not True:
+        st.title("Resource & Capacity Planning")
+        st.error(
+            "The selected shared Population & Uptake scenario is not currently valid. "
+            "Resolve its population or treatment-mix validation messages before reusing it here."
+        )
+        st.page_link("pages/10_Population_Uptake.py", label="Open Population & Uptake →", icon="👥")
+        st.stop()
+elif selected_population_source == "Budget Impact Analysis":
+    if st.session_state.get("bia_context_valid") is not True:
+        st.title("Resource & Capacity Planning")
+        st.error(
+            "The selected Budget Impact Analysis is not currently valid. "
+            "Resolve its population, treatment-mix or costing validation messages before using its population here."
+        )
+        st.page_link("pages/6_Budget_Impact_Analysis.py", label="Open Budget Impact Analysis →", icon="💷")
+        st.stop()
+
 # Remove resource mappings whose target resource has since been deleted. Other mapping
 # validity is checked by the implementation against the active clinical model.
 valid_resource_ids = {

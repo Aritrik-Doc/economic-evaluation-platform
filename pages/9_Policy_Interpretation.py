@@ -5,17 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from model.budget_impact import (
-    COST_CATEGORIES,
-    AnnualCostInput,
-    BudgetImpactDefinition,
-    BudgetIntervention,
-    PopulationYear,
-    TreatmentMixShare,
-    compound_series,
-    run_budget_impact,
-)
-from model.budget_impact_profiles import BUDGET_IMPACT_PROFILES
+from model.budget_impact import run_budget_impact
 from model.currency import CURRENCIES
 from model.decision_tree import run_decision_tree
 from model.economics import OUTCOME_MEASURES, Strategy, fully_incremental_analysis
@@ -31,13 +21,14 @@ from model.reference_cases import REFERENCE_CASES
 from model.semi_markov import run_semi_markov
 from model.semi_markov_builder import compile_semi_markov_tables
 from model.tree_builder import compile_builder_tables
+from ui.bia_context import bia_definition_from_session
 from ui.design_system import coloured_block, status_bar
 from ui.policy_interpretation import render_combined_headlines, render_policy_interpretation
 
 
 st.set_page_config(page_title="Policy Interpretation", page_icon="🧾", layout="wide")
 st.title("Policy Interpretation")
-st.caption("Version 0.14 — deterministic translation of value, affordability and implementation outputs")
+st.caption("Version 0.15 — deterministic translation of value, affordability and implementation outputs")
 
 coloured_block(
     "Translate results without replacing judgement",
@@ -198,72 +189,7 @@ def _advanced_interpretation() -> PolicyInterpretation:
 
 
 def _bia_definition():
-    profile_code = st.session_state.get("bia_profile")
-    raw_interventions = st.session_state.get("bia_interventions")
-    if not profile_code or not raw_interventions:
-        raise ValueError("Configure Budget Impact Analysis first.")
-    if profile_code == "CUSTOM":
-        horizon = int(st.session_state.get("bia_horizon_custom", 3))
-        currency_code = st.session_state.get("bia_currency_custom", "GBP")
-    else:
-        profile = BUDGET_IMPACT_PROFILES[profile_code]
-        horizon = int(st.session_state.get(f"bia_horizon_{profile.code}", profile.default_horizon_years))
-        currency_code = st.session_state.get("bia_currency_profile", profile.default_currency)
-
-    interventions = tuple(
-        BudgetIntervention(str(row["id"]), str(row["name"])) for row in raw_interventions
-    )
-    population = []
-    for index in range(horizon):
-        eligible_key = f"bia_eligible_{horizon}_{index}"
-        if eligible_key not in st.session_state:
-            raise ValueError("Complete the annual BIA population inputs before interpretation.")
-        covered = float(st.session_state.get(f"bia_covered_{horizon}_{index}", 0.0) or 0.0)
-        population.append(
-            PopulationYear(
-                index + 1,
-                float(st.session_state[eligible_key]),
-                covered if covered > 0 else None,
-            )
-        )
-
-    mix = []
-    for year in range(1, horizon + 1):
-        for scenario in ("current", "future"):
-            for intervention in interventions:
-                key = f"bia_share_{scenario}_{year}_{intervention.id}"
-                if key not in st.session_state:
-                    raise ValueError("Complete the BIA current and future treatment mix before interpretation.")
-                mix.append(
-                    TreatmentMixShare(
-                        scenario,
-                        year,
-                        intervention.id,
-                        float(st.session_state[key]),
-                    )
-                )
-
-    costs = []
-    cost_inputs = st.session_state.get("bia_cost_inputs", {})
-    for intervention in interventions:
-        data = cost_inputs.get(intervention.id, {})
-        growth = float(data.get("annual_change", 0.0))
-        for category in COST_CATEGORIES:
-            series = compound_series(float(data.get(category, 0.0)), growth, horizon)
-            for year, value in enumerate(series, start=1):
-                costs.append(AnnualCostInput(intervention.id, year, category, value))
-    included = tuple(st.session_state.get("bia_included_categories", list(COST_CATEGORIES)))
-    return (
-        BudgetImpactDefinition(
-            interventions,
-            tuple(population),
-            tuple(mix),
-            tuple(costs),
-            included,
-        ),
-        currency_code,
-        horizon,
-    )
+    return bia_definition_from_session(dict(st.session_state))
 
 
 def _bia_interpretation() -> PolicyInterpretation:
@@ -447,8 +373,8 @@ with methods_tab:
     )
     st.markdown(
         "**Value:** threshold-specific NMB, efficient-frontier position, incremental cost/effect and ICER.  \n"
-        "**Affordability:** annual and cumulative budget impact, PMPM where available, and the largest cost-category change.  \n"
-        "**Feasibility:** the most recently validated resource/capacity result, including demand, residual capacity, utilisation, headroom and shortfall. Feasibility no longer requires a BIA to exist."
+        "**Affordability:** the current validated BIA handoff, including annual and cumulative budget impact, PMPM where available, and the largest cost-category change.  \n"
+        "**Feasibility:** the most recently validated resource/capacity result, including demand, residual capacity, utilisation, headroom and shortfall. Feasibility does not require a BIA to exist."
     )
     st.write(
         "Each detailed statement displays its analytical basis. The language deliberately distinguishes calculated findings from policy judgements, and the three domains are not collapsed into a single score."

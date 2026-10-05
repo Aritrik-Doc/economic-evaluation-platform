@@ -44,6 +44,33 @@ def test_illustrative_placeholder_is_provisional():
     assert summary.incomplete_parameters == 0
 
 
+def test_parameter_library_default_instructions_are_provisional():
+    summary = transparency_summary([
+        base_row(
+            source_citation="User-entered parameter — add the evidence source before substantive use",
+            assumption="User-entered model parameter.",
+            assumption_rationale="Complete the modelling rationale before substantive use.",
+            dsa_enabled=False,
+            psa_enabled=False,
+        )
+    ])
+    assert summary.provisional_parameters == 1
+    assert summary.complete_parameters == 0
+
+
+def test_explicit_user_assumption_can_be_documentationally_complete():
+    summary = transparency_summary([
+        base_row(
+            source_citation="User assumption documented in the modelling protocol",
+            assumption="Treatment effect is held constant after the observed period.",
+            assumption_rationale="No longer-term comparative evidence was identified; tested in DSA.",
+            dsa_enabled=False,
+            psa_enabled=False,
+        )
+    ])
+    assert summary.complete_parameters == 1
+
+
 def test_cost_parameter_requires_currency_price_year_and_bearer():
     summary = transparency_summary([
         base_row(
