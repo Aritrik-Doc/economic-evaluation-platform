@@ -5,22 +5,24 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from model.population_projection import (
+    project_direct_population,
+    project_top_down_population,
+)
 from model.population_uptake import (
     PopulationOption,
     PopulationUptakeDefinition,
     PopulationUptakeValidationError,
     PopulationYear,
     TreatmentMixShare,
-    compound_series,
     run_population_uptake,
-    top_down_eligible_population,
 )
 from ui.design_system import coloured_block, status_bar
 
 
 st.set_page_config(page_title="Population & Uptake", page_icon="👥", layout="wide")
 st.title("Population & Uptake")
-st.caption("Version 0.14 — shared eligible-population and treatment-mix assumptions for affordability and implementation planning")
+st.caption("Version 0.14.1 — shared eligible-population and treatment-mix assumptions for affordability and implementation planning")
 
 coloured_block(
     "Define the population once, then reuse it",
@@ -126,9 +128,9 @@ with methods_tab:
     st.session_state.pu_population_basis = population_basis
 
     if population_basis == "annual_eligible_population":
-        st.info("Each year is interpreted as the population eligible for or receiving the modelled options in that year. This is suitable for cross-sectional annual costing/resource use when the same individuals are not automatically treated as new cohorts.")
+        st.info("Each year is a cross-sectional population relevant to that year. Use this when annual service demand/costing applies to the population present in each year and people are not automatically treated as fresh cohorts.")
     else:
-        st.warning("Each year is interpreted as a cohort of new treatment starts. Downstream longitudinal models may stack Year-1, Year-2 and later consequences across initiation cohorts.")
+        st.warning("Each year is a new initiation cohort. Longitudinal clinical/resource models can stack Year-1, Year-2 and later consequences from earlier cohorts into later calendar years.")
 
     st.markdown("#### Options / interventions")
     option_ids = [str(row["id"]) for row in st.session_state.pu_options]
@@ -157,14 +159,26 @@ with methods_tab:
 
 with population_tab:
     st.subheader("Eligible population by year")
+    st.write("Choose how the Year-1 population is derived, then decide whether the annual values should continue to follow that formula or be manually overridden.")
+
     mode = st.radio(
-        "Population entry method",
-        ["Direct annual population", "Top-down funnel"],
+        "Population derivation method",
+        ["Direct eligible population", "Top-down funnel"],
         horizontal=True,
-        key="pu_population_mode",
+        key="pu_population_mode_v0141",
     )
-    covered_series = None
+
     if mode == "Top-down funnel":
+        with st.expander("What each funnel input means", expanded=True):
+            st.markdown(
+                "**Eligible population = covered/catchment population × prevalence × diagnosed/identified × clinically eligible × access/coverage.**\n\n"
+                "- **Covered / catchment population:** the starting population served by the payer, programme or service.\n"
+                "- **Prevalence / target-condition proportion:** the share of that population with the condition or policy-relevant characteristic.\n"
+                "- **Diagnosed / identified:** the share of affected people who are known to the system.\n"
+                "- **Clinically eligible:** the share of diagnosed/identified people meeting the intervention criteria.\n"
+                "- **Access / coverage:** the share of eligible people expected to reach or be covered by the service.\n"
+                "- **Annual population growth:** changes the covered/catchment population in later years; the eligible population then changes through the same funnel."
+            )
         c1, c2, c3 = st.columns(3)
         covered_start = c1.number_input("Covered / catchment population — Year 1", min_value=0.0, value=1_000_000.0, step=10_000.0, key="pu_covered_start")
         prevalence = c2.number_input("Prevalence / target-condition proportion", 0.0, 1.0, 0.01, format="%.6f", key="pu_prevalence")
@@ -172,48 +186,107 @@ with population_tab:
         c1, c2, c3 = st.columns(3)
         eligible_prop = c1.number_input("Clinically eligible proportion", 0.0, 1.0, 0.75, format="%.4f", key="pu_eligible_prop")
         access = c2.number_input("Access / covered proportion", 0.0, 1.0, 0.90, format="%.4f", key="pu_access")
-        growth = c3.number_input("Annual covered-population growth", value=0.01, format="%.4f", key="pu_population_growth")
-        covered_series = compound_series(covered_start, growth, horizon)
-        derived = tuple(top_down_eligible_population(value, prevalence, diagnosed, eligible_prop, access) for value in covered_series)
+        old_growth = float(st.session_state.get("pu_population_growth", 0.01)) * 100.0
+        growth_pct = c3.number_input("Annual covered/catchment growth (%)", value=old_growth, format="%.3f", key="pu_population_growth_pct")
+        projection = project_top_down_population(
+            covered_or_catchment_start=covered_start,
+            covered_or_catchment_growth_rate=growth_pct / 100.0,
+            prevalence=prevalence,
+            diagnosed_or_identified=diagnosed,
+            clinically_eligible=eligible_prop,
+            access_or_coverage=access,
+            horizon_years=horizon,
+        )
+        st.caption("In top-down mode the covered/catchment population is also carried as the covered-lives denominator. If your PMPM denominator differs from the catchment population, use manual annual override below.")
     else:
-        c1, c2, c3 = st.columns(3)
+        with st.expander("What each direct-population input means", expanded=True):
+            st.markdown(
+                "- **Eligible population — Year 1:** the number of people relevant to the policy decision in the first year.\n"
+                "- **Eligible-population growth:** changes that eligible population in later years. A value of 2% makes Year 2 equal to Year 1 × 1.02.\n"
+                "- **Covered lives:** an optional payer/population denominator used for outputs such as per-member-per-month. It does **not** change the eligible population in direct mode.\n"
+                "- **Covered-lives growth:** changes only the denominator in later years. Keep it separate when the covered population and eligible population grow at different rates."
+            )
+        c1, c2 = st.columns(2)
         start = c1.number_input("Eligible population — Year 1", min_value=0.0, value=10_000.0, step=100.0, key="pu_eligible_start")
-        growth = c2.number_input("Annual eligible-population growth", value=0.02, format="%.4f", key="pu_eligible_growth")
-        covered_start = c3.number_input("Covered lives — Year 1 (0 = not supplied)", min_value=0.0, value=0.0, step=1000.0, key="pu_covered_direct")
-        derived = compound_series(start, growth, horizon)
-        covered_series = None if covered_start <= 0 else compound_series(covered_start, growth, horizon)
+        old_eligible_growth = float(st.session_state.get("pu_eligible_growth", 0.02)) * 100.0
+        eligible_growth_pct = c2.number_input("Annual eligible-population growth (%)", value=old_eligible_growth, format="%.3f", key="pu_eligible_growth_pct")
+        c1, c2 = st.columns(2)
+        covered_start = c1.number_input("Covered lives — Year 1 (0 = not supplied)", min_value=0.0, value=0.0, step=1000.0, key="pu_covered_direct")
+        covered_growth_pct = c2.number_input("Annual covered-lives growth (%)", value=0.0, format="%.3f", key="pu_covered_growth_pct", disabled=covered_start <= 0)
+        projection = project_direct_population(
+            eligible_start=start,
+            eligible_growth_rate=eligible_growth_pct / 100.0,
+            horizon_years=horizon,
+            covered_lives_start=covered_start if covered_start > 0 else None,
+            covered_lives_growth_rate=covered_growth_pct / 100.0,
+        )
+
+    projection_df = pd.DataFrame([
+        {
+            "Year": row.year,
+            "Formula-derived eligible population": row.eligible_population,
+            "Formula-derived covered lives": row.covered_lives,
+        }
+        for row in projection
+    ])
+
+    entry_mode = st.radio(
+        "How should the annual values be used?",
+        ["Use formula-derived annual values", "Edit annual values manually"],
+        horizontal=True,
+        key="pu_annual_entry_mode",
+        help="Formula-derived mode always follows the current inputs above. Manual mode freezes separate year-specific values until you edit or reset them.",
+    )
 
     population_rows = []
-    for year in range(1, horizon + 1):
-        c1, c2 = st.columns(2)
-        eligible_key = f"pu_eligible_{year}"
-        covered_key = f"pu_covered_{year}"
-        eligible_value = c1.number_input(
-            f"Year {year} population",
-            min_value=0.0,
-            value=float(st.session_state.get(eligible_key, derived[year - 1])),
-            step=max(float(derived[year - 1]) * 0.01, 1.0),
-            key=eligible_key,
-        )
-        covered_default = float(covered_series[year - 1]) if covered_series is not None else 0.0
-        covered_value = c2.number_input(
-            f"Year {year} covered lives (0 = not supplied)",
-            min_value=0.0,
-            value=float(st.session_state.get(covered_key, covered_default)),
-            step=max(covered_default * 0.01, 100.0) if covered_default else 1000.0,
-            key=covered_key,
-        )
-        try:
-            population_rows.append(PopulationYear(year, eligible_value, covered_value if covered_value > 0 else None))
-        except ValueError as exc:
-            st.error(f"Year {year}: {exc}")
+    if entry_mode == "Use formula-derived annual values":
+        st.success("Live projection: changing any population driver above immediately changes the annual values used by BIA and capacity planning.")
+        st.dataframe(projection_df, use_container_width=True, hide_index=True)
+        for row in projection:
+            try:
+                population_rows.append(PopulationYear(row.year, row.eligible_population, row.covered_lives))
+            except ValueError as exc:
+                st.error(f"Year {row.year}: {exc}")
+    else:
+        st.warning("Manual override is active. Changes to the formula inputs above will update the preview, but will not overwrite your year-specific manual values unless you reset them.")
+        st.dataframe(projection_df, use_container_width=True, hide_index=True)
+        if st.button("Reset all manual annual values from the current formula", key="pu_reset_manual_projection"):
+            for row in projection:
+                st.session_state[f"pu_manual_eligible_{row.year}"] = float(row.eligible_population)
+                st.session_state[f"pu_manual_covered_{row.year}"] = float(row.covered_lives or 0.0)
+            st.rerun()
+        for row in projection:
+            eligible_key = f"pu_manual_eligible_{row.year}"
+            covered_key = f"pu_manual_covered_{row.year}"
+            st.session_state.setdefault(eligible_key, float(row.eligible_population))
+            st.session_state.setdefault(covered_key, float(row.covered_lives or 0.0))
+            c1, c2 = st.columns(2)
+            eligible_value = c1.number_input(
+                f"Year {row.year} eligible population",
+                min_value=0.0,
+                step=max(float(row.eligible_population) * 0.01, 1.0),
+                key=eligible_key,
+            )
+            covered_value = c2.number_input(
+                f"Year {row.year} covered lives (0 = not supplied)",
+                min_value=0.0,
+                step=max(float(row.covered_lives or 0.0) * 0.01, 100.0) if row.covered_lives else 1000.0,
+                key=covered_key,
+            )
+            try:
+                population_rows.append(PopulationYear(row.year, eligible_value, covered_value if covered_value > 0 else None))
+            except ValueError as exc:
+                st.error(f"Year {row.year}: {exc}")
 
     st.markdown("#### Evidence and rationale")
-    st.session_state.pu_population_source = st.text_area("Population evidence source", st.session_state.pu_population_source, key="pu_population_source_widget")
-    st.session_state.pu_population_rationale = st.text_area("Population derivation / rationale", st.session_state.pu_population_rationale, key="pu_population_rationale_widget")
+    population_source_text = st.text_area("Population evidence source", value=str(st.session_state.pu_population_source), key="pu_population_source_widget")
+    population_rationale_text = st.text_area("Population derivation / rationale", value=str(st.session_state.pu_population_rationale), key="pu_population_rationale_widget")
+    st.session_state.pu_population_source = population_source_text
+    st.session_state.pu_population_rationale = population_rationale_text
 
 with uptake_tab:
     st.subheader("Current and future option mix")
+    st.caption("Current mix describes what happens without the proposed change. Future mix describes the expected allocation after implementation. These shares determine how the annual population is split across options; they do not change the total population.")
     options = [PopulationOption(str(row["id"]), str(row["name"])) for row in st.session_state.pu_options]
     mix_rows = []
     for year in range(1, horizon + 1):
@@ -222,13 +295,13 @@ with uptake_tab:
                 st.markdown(f"**{scenario.title()} mix**")
                 cols = st.columns(len(options))
                 values = []
-                for index, option in enumerate(options):
+                for option_index, option in enumerate(options):
                     key = f"pu_share_{scenario}_{year}_{option.id}"
                     if scenario == "current":
-                        default = 1.0 if index == 0 else 0.0
+                        default = 1.0 if option_index == 0 else 0.0
                     else:
-                        default = 0.7 if index == 0 else (0.3 if index == 1 else 0.0)
-                    value = cols[index].number_input(
+                        default = 0.7 if option_index == 0 else (0.3 if option_index == 1 else 0.0)
+                    value = cols[option_index].number_input(
                         option.name,
                         min_value=0.0,
                         max_value=1.0,
@@ -245,10 +318,14 @@ with uptake_tab:
                     st.error(f"Shares sum to {total:.4f}; they must sum to 1. The platform will not normalise them automatically.")
 
     st.markdown("#### Uptake evidence")
-    st.session_state.pu_current_mix_source = st.text_area("Current-mix evidence source", st.session_state.pu_current_mix_source, key="pu_current_mix_source_widget")
-    st.session_state.pu_current_mix_rationale = st.text_area("Current-mix rationale", st.session_state.pu_current_mix_rationale, key="pu_current_mix_rationale_widget")
-    st.session_state.pu_future_mix_source = st.text_area("Future-uptake evidence source", st.session_state.pu_future_mix_source, key="pu_future_mix_source_widget")
-    st.session_state.pu_future_mix_rationale = st.text_area("Future-uptake rationale", st.session_state.pu_future_mix_rationale, key="pu_future_mix_rationale_widget")
+    current_source = st.text_area("Current-mix evidence source", value=str(st.session_state.pu_current_mix_source), key="pu_current_mix_source_widget")
+    current_rationale = st.text_area("Current-mix rationale", value=str(st.session_state.pu_current_mix_rationale), key="pu_current_mix_rationale_widget")
+    future_source = st.text_area("Future-uptake evidence source", value=str(st.session_state.pu_future_mix_source), key="pu_future_mix_source_widget")
+    future_rationale = st.text_area("Future-uptake rationale", value=str(st.session_state.pu_future_mix_rationale), key="pu_future_mix_rationale_widget")
+    st.session_state.pu_current_mix_source = current_source
+    st.session_state.pu_current_mix_rationale = current_rationale
+    st.session_state.pu_future_mix_source = future_source
+    st.session_state.pu_future_mix_rationale = future_rationale
 
 compiled = None
 run = None
@@ -285,6 +362,20 @@ with review_tab:
             ("New starts" if compiled.population_basis == "new_treatment_starts" else "Annual eligible population", "neutral"),
             ("Reusable in BIA and capacity", "green"),
         ])
+        st.markdown("#### Annual population used downstream")
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Year": row.year,
+                    "Eligible population": row.eligible_population,
+                    "Covered lives": row.covered_lives,
+                }
+                for row in compiled.population
+            ]),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("#### Allocation by option")
         st.dataframe(
             pd.DataFrame([
                 {
