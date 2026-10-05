@@ -22,7 +22,7 @@ from ui.design_system import coloured_block, status_bar
 
 st.set_page_config(page_title="Population & Uptake", page_icon="👥", layout="wide")
 st.title("Population & Uptake")
-st.caption("Version 0.14.1 — shared eligible-population and treatment-mix assumptions for affordability and implementation planning")
+st.caption("Version 0.15 — shared eligible-population and treatment-mix assumptions for affordability and implementation planning")
 
 coloured_block(
     "Define the population once, then reuse it",
@@ -60,6 +60,7 @@ def _init_state() -> None:
     st.session_state.setdefault("pu_current_mix_rationale", "Current allocation should reflect actual routine care in the target system.")
     st.session_state.setdefault("pu_future_mix_source", "Illustrative future uptake — replace with forecast evidence")
     st.session_state.setdefault("pu_future_mix_rationale", "Future uptake should reflect access, implementation and expected substitution.")
+    st.session_state.setdefault("pu_context_valid", False)
 
 
 def _copy_to_bia(definition: PopulationUptakeDefinition) -> None:
@@ -68,6 +69,7 @@ def _copy_to_bia(definition: PopulationUptakeDefinition) -> None:
     st.session_state["bia_profile"] = "CUSTOM"
     st.session_state["bia_horizon_custom"] = horizon
     st.session_state["bia_population_mode"] = "Direct annual eligible population"
+    st.session_state["bia_population_entry_mode"] = "Edit annual values manually"
     st.session_state["bia_interventions"] = [
         {"id": option.id, "name": option.name} for option in definition.options
     ]
@@ -347,13 +349,18 @@ try:
         {"scenario": row.scenario, "year": row.year, "intervention_id": row.intervention_id, "share": row.share}
         for row in compiled.treatment_mix
     ]
+    st.session_state.pu_context_valid = True
 except (PopulationUptakeValidationError, ValueError) as exc:
     compile_error = str(exc)
+    st.session_state.pu_context_valid = False
+    st.session_state.pop("pu_population_rows", None)
+    st.session_state.pop("pu_uptake_rows", None)
 
 with review_tab:
     st.subheader("Review the shared population scenario")
     if compile_error:
         st.error(compile_error)
+        st.warning("The current population/uptake configuration is invalid, so downstream BIA/capacity pages will not reuse an earlier valid scenario from this session.")
     else:
         assert compiled is not None and run is not None
         status_bar([
@@ -392,10 +399,10 @@ with review_tab:
             hide_index=True,
             column_config={"Share": st.column_config.NumberColumn(format="%.1%")},
         )
-        st.info("This population scenario contains no costs and no clinical outcomes. Capacity can consume it directly. Budget Impact Analysis currently receives an explicit editable snapshot so later BIA edits cannot silently change the shared scenario.")
+        st.info("This population scenario contains no costs and no clinical outcomes. Capacity can consume it directly. Budget Impact Analysis receives an explicit editable snapshot so later BIA edits cannot silently change the shared scenario.")
         if st.button("Copy this population & uptake snapshot into BIA", type="primary", key="pu_copy_to_bia"):
             _copy_to_bia(compiled)
-            st.success("Copied to Budget Impact Analysis as a Custom-profile snapshot. Cost inputs remain separate and must be completed in the BIA workspace.")
+            st.success("Copied to Budget Impact Analysis as a Custom-profile manual snapshot. Cost inputs remain separate and must be completed in the BIA workspace.")
         c1, c2 = st.columns(2)
         with c1:
             st.page_link("pages/6_Budget_Impact_Analysis.py", label="Open Budget Impact Analysis →", icon="💷")
