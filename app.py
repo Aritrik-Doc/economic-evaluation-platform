@@ -31,7 +31,21 @@ def _manual_bia_differs_from_validated_context() -> bool:
     treatment_mix = st.session_state.get("bia_treatment_mix_rows") or []
     if not population or not treatment_mix:
         return False
+
     horizon = len(population)
+    if st.session_state.get("bia_profile") == "CUSTOM":
+        if int(st.session_state.get("bia_horizon_custom", horizon)) != horizon:
+            return True
+
+    canonical_ids = {str(row["intervention_id"]) for row in treatment_mix}
+    current_ids = {
+        str(row.get("id"))
+        for row in (st.session_state.get("bia_interventions") or [])
+        if row.get("id")
+    }
+    if current_ids and current_ids != canonical_ids:
+        return True
+
     for index, row in enumerate(population):
         eligible_key = f"bia_eligible_{horizon}_{index}"
         covered_key = f"bia_covered_{horizon}_{index}"
