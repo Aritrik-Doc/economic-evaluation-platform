@@ -14,8 +14,12 @@ from typing import Mapping, Sequence, Any
 _PLACEHOLDER_TOKENS = (
     "illustrative",
     "replace with evidence",
-    "user assumption",
     "example input",
+    "add the evidence source",
+    "complete the modelling rationale",
+    "before substantive use",
+    "user-entered parameter",
+    "user-entered model parameter",
 )
 
 
