@@ -38,7 +38,7 @@ from ui.design_system import coloured_block, status_bar
 
 st.set_page_config(page_title="Resource & Capacity Planning", page_icon="🏥", layout="wide")
 st.title("Resource & Capacity Planning")
-st.caption("Version 0.14 — reusable population context, clinical resource linkage, natural-unit demand and capacity planning")
+st.caption("Version 0.14.1 — reusable population context, clinical resource linkage, natural-unit demand and capacity planning")
 
 coloured_block(
     "Plan physical implementation independently of Budget Impact Analysis",
@@ -55,13 +55,75 @@ coloured_block(
 
 CATEGORY_LABELS = {
     "workforce": "Workforce / staff time",
-    "facility": "Facility / treatment space",
-    "equipment": "Equipment / machine time",
+    "facility": "Facility / treatment space / chairs",
+    "equipment": "Equipment / machines / vehicles",
     "diagnostic": "Diagnostics / tests / imaging",
-    "inpatient": "Inpatient / bed capacity",
-    "pharmacy": "Pharmacy / preparation",
-    "consumable": "Consumables / devices",
-    "other": "Other resource",
+    "inpatient": "Inpatient / bed-days / admissions",
+    "pharmacy": "Pharmacy / preparation / vials",
+    "consumable": "Consumables / syringes / oxygen / blood products",
+    "other": "Transport / ambulances / other resource",
+}
+RESOURCE_EXAMPLES = {
+    "Clinical staff time": {
+        "name": "Clinical staff time",
+        "unit": "hours",
+        "category": "workforce",
+        "note": "Use when clinician, nurse, pharmacist or technician time is the constrained resource.",
+    },
+    "Treatment-chair time": {
+        "name": "Treatment-chair time",
+        "unit": "chair-hours",
+        "category": "facility",
+        "note": "Useful for infusions, dialysis or other services constrained by treatment spaces over time.",
+    },
+    "Inpatient bed-days": {
+        "name": "Inpatient bed-days",
+        "unit": "bed-days",
+        "category": "inpatient",
+        "note": "Model demand and available capacity in the same bed-day unit; do not compare bed-days used directly with a simple count of beds.",
+    },
+    "Syringes": {
+        "name": "Syringes",
+        "unit": "syringes",
+        "category": "consumable",
+        "note": "Use physical units consumed per patient, procedure or treatment course.",
+    },
+    "Medicine vials": {
+        "name": "Medicine vials",
+        "unit": "vials",
+        "category": "pharmacy",
+        "note": "Useful when vial availability, compounding or pharmacy throughput is operationally constrained.",
+    },
+    "Ambulance trips": {
+        "name": "Ambulance trips",
+        "unit": "trips",
+        "category": "other",
+        "note": "Use trips when transport demand is event-based. Vehicle-hours can be defined separately when time is the constraint.",
+    },
+    "Vehicle-hours": {
+        "name": "Vehicle-hours",
+        "unit": "vehicle-hours",
+        "category": "equipment",
+        "note": "Use for outreach, mobile clinics or transport fleets where available vehicle time is the relevant capacity.",
+    },
+    "Oxygen supply": {
+        "name": "Oxygen supply",
+        "unit": "litres",
+        "category": "consumable",
+        "note": "Choose litres, cubic metres or cylinders consistently for both demand and available supply.",
+    },
+    "Blood products": {
+        "name": "Blood products",
+        "unit": "units",
+        "category": "consumable",
+        "note": "Use units/bags of the relevant blood component and document whether wastage or reserve stock is included.",
+    },
+    "Diagnostic scans": {
+        "name": "Diagnostic scans",
+        "unit": "scans",
+        "category": "diagnostic",
+        "note": "Use scan counts, machine-hours or appointment slots depending on the actual service constraint.",
+    },
 }
 PROVISIONAL_MARKERS = ("illustrative", "replace with", "placeholder", "example input")
 
@@ -448,22 +510,49 @@ resources_tab, requirements_tab, clinical_tab, capacity_tab, results_tab, transp
 
 with resources_tab:
     st.subheader("Define physical resources")
-    st.caption("Use observable natural units such as hours, appointments, bed-days, scans, tests, procedures, treatment slots or device units.")
+    st.write("Resources are not limited to staff time. Define the operational quantity that can become constrained, then use the same natural unit for demand and available capacity.")
+    st.caption("Examples include staff-hours, chair-hours, bed-days, syringes, vials, ambulance trips, vehicle-hours, oxygen litres/cylinders, blood units, scans, tests, procedures, treatment slots and device units.")
+
+    with st.expander("Common resource examples and unit choices", expanded=True):
+        st.markdown(
+            "**Choose the unit that matches the actual constraint.** For example, if demand is measured in bed-days, annual capacity should also be entered in bed-days (for example staffed beds × usable days, adjusted as appropriate) rather than as a simple count of beds. The same principle applies to oxygen, vehicles, blood products and other supplies."
+        )
+        example_name = st.selectbox("Quick-add example", list(RESOURCE_EXAMPLES), key="rc_resource_example")
+        example = RESOURCE_EXAMPLES[example_name]
+        st.caption(f"Suggested unit: `{example['unit']}` · {example['note']}")
+        if st.button("Add this resource example", key="rc_add_resource_example"):
+            existing_names = {str(row["name"]) for row in st.session_state.rc_resources}
+            if example["name"] in existing_names:
+                st.warning("That resource already exists in this capacity plan. Edit the existing resource instead of adding a duplicate name.")
+            else:
+                existing_ids = {str(row["id"]) for row in st.session_state.rc_resources}
+                st.session_state.rc_resources.append(
+                    {
+                        "id": _unique_id(example["name"], existing_ids),
+                        "name": example["name"],
+                        "unit": example["unit"],
+                        "category": example["category"],
+                        "source": "Illustrative resource definition — replace with local evidence",
+                        "rationale": example["note"],
+                    }
+                )
+                st.rerun()
+
     resource_ids = [str(row["id"]) for row in st.session_state.rc_resources]
     selected_id = st.selectbox("Resource to edit", resource_ids, format_func=lambda rid: _resource_meta(rid)["name"], key="rc_selected_resource")
     selected_index = next(i for i, row in enumerate(st.session_state.rc_resources) if row["id"] == selected_id)
     selected = dict(st.session_state.rc_resources[selected_index])
     c1, c2, c3 = st.columns(3)
     selected["name"] = c1.text_input("Resource name", str(selected["name"]), key=f"rc_name_{selected_id}")
-    selected["unit"] = c2.text_input("Natural unit", str(selected["unit"]), key=f"rc_unit_{selected_id}")
+    selected["unit"] = c2.text_input("Natural unit", str(selected["unit"]), key=f"rc_unit_{selected_id}", help="Examples: hours, bed-days, syringes, vials, trips, vehicle-hours, litres, cylinders, blood units, scans or device units.")
     selected["category"] = c3.selectbox("Resource category", list(RESOURCE_CATEGORIES), index=list(RESOURCE_CATEGORIES).index(str(selected["category"])), format_func=lambda code: CATEGORY_LABELS[code], key=f"rc_category_{selected_id}")
     selected["source"] = st.text_area("Resource evidence source", str(selected.get("source", "")), key=f"rc_source_{selected_id}")
     selected["rationale"] = st.text_area("Resource definition / inclusion rationale", str(selected.get("rationale", "")), key=f"rc_rationale_{selected_id}")
     st.session_state.rc_resources[selected_index] = selected
-    with st.expander("+ Add another resource"):
+    with st.expander("+ Add a custom resource"):
         with st.form("rc_add_resource", clear_on_submit=True):
             new_name = st.text_input("Resource name")
-            new_unit = st.text_input("Natural unit", placeholder="e.g. hours, visits, scans, bed-days")
+            new_unit = st.text_input("Natural unit", placeholder="e.g. bed-days, syringes, vials, trips, litres, blood units")
             new_category = st.selectbox("Category", list(RESOURCE_CATEGORIES), format_func=lambda code: CATEGORY_LABELS[code])
             if st.form_submit_button("Add resource") and new_name.strip() and new_unit.strip():
                 existing = {str(row["id"]) for row in st.session_state.rc_resources}
@@ -513,7 +602,7 @@ with clinical_tab:
             clinical_locations = {}
             kind = ""
         if not resource_parameters:
-            st.warning("Add one or more parameters with category `resource_use` to the selected clinical model. Their values should be natural units, for example hours/year, visits/year or scans/event.")
+            st.warning("Add one or more parameters with category `resource_use` to the selected clinical model. Values may be hours/year, bed-days/year, syringes/event, vials/event, ambulance trips/event, oxygen litres/event, blood units/event, scans/event, or another documented natural unit.")
         else:
             parameter_labels = {parameter.id: parameter.label for parameter in compiled_clinical.parameters}
             resource_ids = [str(row["id"]) for row in st.session_state.rc_resources]
@@ -589,6 +678,7 @@ with capacity_tab:
     resource_ids = [str(row["id"]) for row in st.session_state.rc_resources]
     cap_resource = st.selectbox("Resource to configure", resource_ids, format_func=lambda rid: _resource_meta(rid)["name"], key="rc_cap_resource")
     unit = _resource_meta(cap_resource)["unit"]
+    st.caption(f"Capacity for this resource must use the same unit as demand: `{unit}`. If the operational stock is expressed differently (for example beds rather than bed-days), convert it explicitly and document that assumption rather than mixing units.")
     for year in range(1, horizon_years + 1):
         total_key = f"rc_capacity_total_{cap_resource}_{year}"
         committed_key = f"rc_capacity_committed_{cap_resource}_{year}"
