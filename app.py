@@ -15,6 +15,35 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+def _sync_validated_bia_legacy_keys() -> None:
+    """Mirror the canonical validated BIA export to legacy cross-page widget keys.
+
+    BIA v0.15 publishes canonical population/mix rows. Some older downstream page
+    code still reads the historical widget keys, so keep those values synchronized
+    only after the BIA itself has validated. This avoids formula-derived BIA values
+    becoming invisible to clinical linkage/capacity while those consumers migrate
+    to the shared BIA context helper.
+    """
+
+    if st.session_state.get("bia_context_valid") is not True:
+        return
+    population = st.session_state.get("bia_population_rows") or []
+    treatment_mix = st.session_state.get("bia_treatment_mix_rows") or []
+    if not population or not treatment_mix:
+        return
+    horizon = len(population)
+    for index, row in enumerate(population):
+        st.session_state[f"bia_eligible_{horizon}_{index}"] = float(row["eligible_population"])
+        st.session_state[f"bia_covered_{horizon}_{index}"] = float(row.get("covered_lives") or 0.0)
+    for row in treatment_mix:
+        st.session_state[
+            f"bia_share_{row['scenario']}_{int(row['year'])}_{row['intervention_id']}"
+        ] = float(row["share"])
+
+
+_sync_validated_bia_legacy_keys()
+
 # Capacity results may depend on shared population inputs and/or a clinical model
 # edited on another page. Invalidate the stored result before any page can consume
 # it when those substantive upstream inputs no longer match the validated run.
