@@ -1,143 +1,177 @@
 # Economic Evaluation Platform
 
-An open, auditable health-economic modelling and decision-analysis platform for HEOR, HTA, and future payer / market-access workflows.
+An open, auditable health-economic modelling and decision-analysis platform for HEOR, HTA, payer affordability and implementation planning.
 
-## Current development milestone: 0.8
+## Current development milestone: 0.15 — stakeholder-readiness pass
 
-Version 0.8 introduces the **product shell and visual design system**: a dedicated landing page, a restrained scientific colour palette, clearer workflow orientation, and the **Transparency check** concept for documenting evidence, assumptions and uncertainty without pretending to grade scientific quality.
+The platform now supports a connected analytical pathway from **clinical modelling** through **cost-effectiveness**, **population and uptake**, **Budget Impact Analysis**, **clinical-cost linkage**, **physical resource/capacity planning**, **policy interpretation**, **transparency review**, and **reproducibility/audit**.
 
-The analytical engines remain unchanged by this milestone.
+Version 0.15 focuses on stakeholder readiness rather than adding another analytical method. It expands the Home page to represent the whole platform, hardens cross-page handoffs, makes BIA population projections reactive, prevents stale invalid upstream analyses from being reused downstream, adds end-to-end integration regressions, verifies navigation targets, and adds a real Streamlit startup smoke test to CI.
 
-## Product principles
+## The three policy questions
 
-The platform is designed around four principles:
+The platform deliberately keeps three related but distinct questions visible:
 
-1. **Model structure should be understandable.** Decision trees and state-transition models use guided construction rather than requiring users to manipulate internal tables directly.
-2. **Evidence should remain attached to the model.** Sources, assumptions, uncertainty, currency, price year and cost bearer are stored with parameters rather than only described elsewhere.
-3. **Uncertainty should be explicit.** DSA and PSA are independent parameter properties, with dedicated two-way, threshold, tornado, CE-plane and CEAC outputs where supported.
-4. **Reproducibility should be built in.** Saved model files, seeds, settings, hashes and audit records preserve the analytical context needed to reconstruct a run.
+1. **Value for money** — what are the expected incremental costs and health outcomes, and how do they compare under the stated decision rule?
+2. **Affordability** — what annual and cumulative financial consequences follow from changing the treatment mix for a defined budget holder and eligible population?
+3. **Implementation feasibility** — what physical resources are required, what capacity is available, and where do utilisation, headroom or shortfalls arise?
 
-## Transparency check
+These domains can be used independently or connected. They are not collapsed into a single adoption/rejection score.
 
-The **Transparency check** assesses documentation completeness, not model quality.
-
-It is designed to flag items such as:
-
-- missing or provisional evidence sources;
-- undocumented modelling assumptions or rationales;
-- incomplete DSA bounds or rationale;
-- incomplete PSA distribution specification or rationale;
-- missing currency, price year or cost-bearer metadata for costs.
-
-A completed Transparency check does **not** mean that an evidence source is high quality, that an assumption is valid, or that a model is scientifically credible. Those judgements remain the responsibility of the analyst and reviewer.
-
-## Recognised reference cases
-
-### NICE technology appraisal
-
-The current profile uses NICE PMG36 methods, including QALYs as the reference-case economic outcome, NHS/PSS costs, 3.5% annual discounting for costs and health outcomes, and a horizon long enough to reflect important differences.
-
-Source: https://www.nice.org.uk/process/pmg36/chapter/economic-evaluation-2/
-
-### HTAIn / Indian Reference Case (2023)
-
-The platform treats the 2023 Indian Reference Case as the governing Indian economic-evaluation profile: QALYs preferred, DALYs supported where appropriate and represented as **DALYs averted**, life-years gained retained as supplementary, abridged-societal base case, 3% discounting for costs and outcomes, current practice as comparator, and no single monetary decision threshold hard-coded into the profile.
-
-Source: https://pmc.ncbi.nlm.nih.gov/articles/PMC10485782/
-
-A custom methods profile is also available, and the reference-case registry is designed to expand to other recognised HTA systems.
-
-## Modelling workspaces
+## Main workspaces
 
 ### Decision Tree Modeller
 
 `pages/1_Decision_Tree_Builder.py`
 
-Guided constrained visual decision-tree construction with chance events, terminal outcomes, direct/complement branch probabilities, timed rewards, deterministic analysis, two-way analysis, threshold analysis, PSA, CE plane, CEAC, save/load and audit export.
+Guided decision-tree construction for short-horizon pathways and mutually exclusive events, with parameter provenance, timed rewards, deterministic sensitivity analysis, two-way and threshold analysis, PSA, cost-effectiveness plane and CEAC outputs.
 
-### Cohort Markov / State-Transition Modeller
+### Cohort Markov Modeller
 
 `pages/2_Cohort_Markov_Builder.py`
 
-Closed-cohort, discrete-time state-transition modelling with guided state and transition construction, initial cohort allocation, state/transition rewards, cycle length, horizon, within-cycle accrual, cohort traces, fully incremental CEA, DSA and PSA.
-
-Transition inputs in this modeller are explicit probabilities for the selected cycle. Direct, complement and residual probability rules are supported.
+Closed-cohort, discrete-time state-transition modelling with configurable cycle length, horizon, initial cohort allocation, state/transition rewards, within-cycle timing, discounting, cohort traces, incremental CEA, DSA and PSA.
 
 ### Advanced Markov Dynamics
 
 `pages/3_Advanced_Markov_Dynamics.py`
 
-Adds semi-Markov / tunnel-state memory, model-time-varying transitions, state-time-varying transitions, age-dependent mortality, competing-risk rate conversion and explicit hazard/probability conversion.
+Semi-Markov/state-time memory, model-time-varying transitions, attained-age mortality, competing-rate conversion and explicit probability-to-rate conversion for more complex cohort models. Model time and state time are kept distinct.
 
-The engine distinguishes:
+### Population & Uptake
 
-- **model time** — time since simulation start;
-- **state time** — time since entry to the current state.
+`pages/10_Population_Uptake.py`
 
-State-time schedules provide the semi-Markov / tunnel-state mechanism.
+A reusable policy-population layer for BIA and capacity planning. It supports:
 
-## Hazard and mortality conventions
+- top-down population funnels;
+- direct eligible-population projections;
+- separate eligible-population and covered-lives growth;
+- explicit **annual eligible population** versus **annual new treatment starts** semantics;
+- formula-derived annual values or explicit manual annual overrides;
+- current and future allocation across options.
 
-`model/transition_dynamics.py` supports:
+The shared population scenario contains no costs or clinical outcomes. BIA receives an explicit editable snapshot; capacity planning can consume the validated shared population directly.
 
-- constant rate → interval probability using `p = 1 - exp(-r*t)`;
-- probability → constant rate;
-- probability rescaling under an explicit constant-hazard assumption;
-- joint competing-rate conversion;
-- full continuous-time generator conversion `P(t) = exp(Q*t)` using uniformization.
+### Budget Impact Analysis
 
-Age-specific mortality probabilities are converted to forces of mortality. Cycles that cross birthdays integrate the hazard across age bands, and SMRs multiply the mortality **rate**, not the probability.
+`pages/6_Budget_Impact_Analysis.py`
 
-Automatic background mortality is only combined with rate-based exits. Probability-based rows must include death coherently inside the probability system rather than having an external mortality probability added heuristically.
+Annual payer-budget modelling with eligible population, current/future treatment mix, uptake, intervention-specific cost components, annual and cumulative budget impact, PMPM where covered lives are supplied, category-level expenditure and scenario exploration.
 
-## Economic outcomes
+Population projections are reactive: formula-derived annual values change when the population drivers change, while manual annual overrides are explicitly separated from the formula.
 
-All supported decision-analysis benefit measures are oriented so that **higher = more health benefit**:
+### Clinical model → BIA linkage
 
-- QALYs gained
-- life-years gained
-- DALYs averted
+`pages/7_BIA_Clinical_Linkage.py`
 
-OS and PFS remain clinical/survival endpoints rather than being treated as interchangeable economic outcomes.
+Links selected downstream condition-related clinical costs from Decision Tree, Cohort Markov or Advanced Markov models into BIA. Direct payer-facing acquisition, administration, monitoring and other BIA costs remain separate to reduce double counting.
 
-## Uncertainty
+Longitudinal linked trajectories require annual **new treatment starts**; the platform does not silently interpret a prevalence stock as a fresh cohort each year.
 
-A parameter can participate in DSA and PSA simultaneously.
+### Resource & Capacity Planning
 
-Evidence-informed distribution families are suggested but never silently imposed. Supported PSA families include Beta, Gamma, Lognormal, Normal, Uniform and grouped Dirichlet sampling. Other declared correlation groups without a configured joint sampling structure are sampled independently with a methodological warning.
+`pages/8_Resource_Capacity_Planning.py`
 
-## Persistence and audit
+Physical implementation planning in natural units. Population can come from:
 
-Decision-tree and state-transition model families support versioned JSON persistence and audit records. State-transition persistence covers homogeneous cohort Markov and advanced semi-Markov models within one file family.
+- the shared Population & Uptake workspace;
+- an active validated BIA;
+- local capacity-workspace inputs.
 
-Saved files retain model structure, parameters, provenance, uncertainty, methods settings and engine settings. SHA-256 content hashes detect unexpected modification; they are integrity checks, not digital signatures of authorship.
+Resource requirements can be:
 
-## Visual design system
+- manual;
+- linked from explicit clinical `resource_use` parameters;
+- hybrid — linked clinical requirements plus additional manual service-planning requirements.
 
-The v0.8 product shell uses a shared visual language built around:
+Resources are unit-agnostic. Examples include staff-hours, treatment-chair hours, bed-days, appointments, tests, scans, syringes, vials, devices, ambulance trips, vehicle-hours, oxygen supply and blood products. Demand and capacity must use the same documented natural unit.
 
-- deep navy for structure and headings;
-- teal as the primary scientific/health accent;
-- muted blue for secondary emphasis;
-- soft neutral backgrounds and white cards;
-- green for completed/validated software states;
-- amber for methodological attention;
-- muted red for invalid model states.
+Outputs include current/future demand, residual available capacity, utilisation, headroom, shortfall and simple capacity-expansion scenarios.
 
-Colour is intended to communicate status and hierarchy rather than scientific certainty.
+### Policy Interpretation
 
-## Key files
+`pages/9_Policy_Interpretation.py`
 
-- `app.py` — product landing page and secondary quick incremental analysis
-- `ui/design_system.py` — shared visual language and landing-page components
-- `model/transparency.py` — documentation-completeness Transparency check
-- `model/reference_cases.py` — NICE, HTAIn and custom methods profiles
-- `model/schema.py` — parameter provenance and split DSA/PSA definitions
-- `model/decision_tree.py` — decision-tree engine
-- `model/markov.py` — homogeneous cohort state-transition engine
-- `model/semi_markov.py` — advanced dynamic cohort engine
-- `model/transition_dynamics.py` — hazard/probability conversion and age mortality
-- `model/state_transition_persistence.py` — state-transition persistence and audit
+A deterministic, rules-based communication layer across:
+
+- **Value** — cost-effectiveness results under the stated threshold;
+- **Affordability** — validated BIA results;
+- **Feasibility** — the latest validated capacity result.
+
+The interpretation explains calculated results in plain language but does not make an adoption, reimbursement or service-allocation recommendation.
+
+### Transparency Check
+
+`pages/5_Transparency_Check.py`
+
+Checks whether important evidence, assumptions, uncertainty specifications and modelling rationales are documented. It is a documentation-completeness safeguard, **not** a scientific quality score and not an evidence-risk-of-bias assessment.
+
+### Save / Load / Audit
+
+`pages/4_State_Transition_Save_Load_Audit.py`
+
+Versioned persistence for cohort Markov and advanced semi-Markov state-transition models, including active methods/engine settings, model tables, provenance and SHA-256 integrity hashes. Loaded models are recompiled and revalidated rather than blindly trusted. Hashes are integrity checks, not signatures of authorship.
+
+## Core methodological safeguards
+
+- No silent FX conversion.
+- No silent normalisation of treatment shares or incoherent probabilities.
+- DSA and PSA can coexist independently for the same parameter.
+- Stored PSA results are invalidated when the substantive model/settings fingerprint changes.
+- Automatic background mortality is combined with disease exits only under a coherent rate-based representation; annual probabilities can be explicitly converted to constant rates when that modelling assumption is intended.
+- Competing hazards are converted jointly rather than by adding probabilities.
+- SMRs act on rates/hazards rather than probabilities.
+- Population stock and new-treatment-start cohort semantics are kept distinct.
+- Natural-resource demand and capacity must use compatible units.
+- Cross-page validated handoffs are invalidated when the upstream configuration becomes invalid or materially changes.
+- Policy Interpretation and Transparency Check never imply that software validation establishes scientific correctness.
+
+## Outcomes and economics
+
+Supported economic benefit measures are oriented so that higher values indicate more health benefit:
+
+- QALYs gained;
+- life-years gained;
+- DALYs averted.
+
+The platform supports fully incremental economic analysis, dominance/extended dominance, ICERs, NMB/INMB and uncertainty outputs where supported by the modeller.
+
+## Reference-case profiles
+
+The repository includes structured profiles for:
+
+- NICE technology-appraisal economic evaluation;
+- HTAIn / Indian Reference Case 2023;
+- Custom economic-evaluation methods;
+- BIA-specific methods profiles including an India-oriented profile and NICE resource-impact framing.
+
+Methodological profiles provide structured defaults and guidance; they do not remove the need to verify the current governing methods in the relevant jurisdiction.
+
+## Stakeholder-readiness validation
+
+The automated workflow now performs:
+
+1. Python compilation of `app.py`, all `pages`, `model` and `ui` modules;
+2. the complete pytest regression suite;
+3. navigation/page-link integrity tests;
+4. a numerical Population → BIA → Capacity integration regression;
+5. validated BIA-session handoff tests;
+6. a Streamlit server startup/health smoke test.
+
+These tests increase confidence in software consistency. They are not a formal model-validation certificate and cannot establish the quality, bias, relevance or transferability of user-supplied evidence.
+
+## Current boundaries
+
+The platform is suitable for **initial stakeholder review**, but several boundaries remain intentional:
+
+- BIA receives Population & Uptake as an explicit snapshot rather than a live two-way synchronised object.
+- Prevalent-stock clinical/capacity linkage requires an explicit time-since-treatment/state distribution and is not inferred automatically.
+- Capacity planning is deterministic demand-versus-capacity analysis, not queue/scheduling optimisation or automatic rationing.
+- Scenario/uncertainty management for BIA/capacity is less mature than the CEA uncertainty framework.
+- Policy Interpretation is deterministic and rules-based; it does not yet automatically integrate every stochastic result across every workspace.
+- There is no account/database layer yet; Streamlit session state remains session-scoped.
+- Software checks do not establish that model structure, evidence sources or assumptions are scientifically valid.
 
 ## Run locally
 
@@ -154,6 +188,4 @@ streamlit run app.py
 pytest -q
 ```
 
-## Next UI refinement
-
-The shared design system can now be propagated further into individual modelling pages with consistent page headers, model-status bars and live Transparency check summaries. Analytical development can continue independently because the underlying engines and persisted model schemas are not changed by v0.8 styling.
+The CI workflow also boots the Streamlit server and checks its health endpoint so a repository state that compiles but cannot start the application is caught before merge.
